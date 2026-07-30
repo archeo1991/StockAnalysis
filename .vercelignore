@@ -1,0 +1,7 @@
+.deepseek-key
+.vercel-deploy-cache
+.git
+.agents
+*.bat
+*.ps1
+test-*.js

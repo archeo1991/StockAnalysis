@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>研策台 · A股策略研究</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23102538'/%3E%3Crect x='14' y='34' width='9' height='16' rx='2' fill='%23ff8a24'/%3E%3Crect x='28' y='24' width='9' height='26' rx='2' fill='%23ff8a24'/%3E%3Crect x='42' y='14' width='9' height='36' rx='2' fill='%23ff8a24'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="title-block">
+        <div class="eyebrow-row">
+          <p class="eyebrow">A股研究辅助</p>
+          <span class="mode-pill">规则分析 + AI研判</span>
+          <span class="mode-pill neutral" id="llmModeBadge">LLM检测中</span>
+        </div>
+        <h1>研策台</h1>
+        <p class="subtitle">规则负责稳定筛信号，LLM负责解释、追问和复盘，把交易纪律固定到同一个工作台里。</p>
+      </div>
+      <div class="topbar-actions">
+        <span class="data-badge" id="dataBadge">空列表</span>
+        <button class="ghost-button" id="helpButton" type="button">使用说明</button>
+        <button class="ghost-button" id="modelConfigButton" type="button">大模型配置</button>
+        <button class="ghost-button" id="copyReportButton" type="button">复制简报</button>
+        <button class="primary-button" id="exportButton" type="button">导出本地备份</button>
+        <label class="ghost-button file-button" for="backupImportInput">导入本地备份</label>
+        <input id="backupImportInput" type="file" accept="application/json,.json" hidden>
+      </div>
+    </header>
+
+    <main class="dashboard-grid">
+      <section class="control-panel" aria-label="控制面板">
+        <div class="panel-title-row">
+          <h2>观察设置</h2>
+          <button class="text-button" id="resetButton" type="button">清空本地数据</button>
+        </div>
+
+        <div class="segmented" role="tablist" aria-label="查看模式">
+          <button class="segment is-active" data-view="overview" type="button">看板</button>
+          <button class="segment" data-view="report" type="button">简报</button>
+          <button class="segment" data-view="analysis" type="button">个股</button>
+        </div>
+
+        <div class="engine-status" aria-label="分析状态">
+          <div>
+            <span>分析方式</span>
+            <strong>规则筛选 + LLM解读</strong>
+          </div>
+          <div>
+            <span>模型调用</span>
+            <strong id="llmStatusText">检测中</strong>
+          </div>
+          <div>
+            <span>数据来源</span>
+            <strong>真实行情 / 财务摘要</strong>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>涨跌幅提醒</span>
+          <input id="moveThreshold" type="range" min="2" max="9" step="0.5" value="5">
+          <strong id="moveThresholdValue">5%</strong>
+        </label>
+
+        <label class="field">
+          <span>放量倍数</span>
+          <input id="volumeThreshold" type="range" min="1.2" max="3" step="0.1" value="1.8">
+          <strong id="volumeThresholdValue">1.8x</strong>
+        </label>
+
+        <label class="field">
+          <span>接近止损线</span>
+          <input id="stopThreshold" type="range" min="1" max="8" step="0.5" value="3">
+          <strong id="stopThresholdValue">3%</strong>
+        </label>
+
+        <label class="field compact-field">
+          <span>筛选信号</span>
+          <select id="signalFilter">
+            <option value="all">全部</option>
+            <option value="high">高优先级</option>
+            <option value="medium">中优先级</option>
+            <option value="low">低优先级</option>
+          </select>
+        </label>
+
+        <div class="notice">
+          <strong>边界说明</strong>
+          <p>只做研究整理、异动提醒和复盘记录，不构成投资建议，也不会自动下单。</p>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="metric-strip" aria-label="今日概览">
+          <article class="metric-card accent-card">
+            <span>自选股</span>
+            <strong id="stockCount">0</strong>
+          </article>
+          <article class="metric-card warn-card">
+            <span>提醒</span>
+            <strong id="alertCount">0</strong>
+          </article>
+          <article class="metric-card good-card">
+            <span>强势</span>
+            <strong id="strongCount">0</strong>
+          </article>
+          <article class="metric-card risk-card">
+            <span>风险偏高</span>
+            <strong id="riskCount">0</strong>
+          </article>
+        </section>
+
+        <section class="import-panel">
+          <div class="section-heading small-heading">
+            <div>
+              <h2>添加股票</h2>
+              <p>输入A股代码后从真实行情源获取数据。</p>
+            </div>
+            <div class="section-actions">
+              <button class="ghost-button" id="refreshRealDataButton" type="button">刷新真实数据</button>
+            </div>
+          </div>
+          <div class="add-stock-grid">
+            <label class="stack-field">
+              <span>股票代码</span>
+              <input id="addStockCode" type="text" inputmode="numeric" placeholder="例如 600519 或 300750">
+            </label>
+            <label class="stack-field">
+              <span>名称备注</span>
+              <input id="addStockName" type="text" placeholder="可留空，自动获取">
+            </label>
+            <label class="stack-field">
+              <span>观察风格</span>
+              <select id="addStockStyle">
+                <option value="短线观察">短线观察</option>
+                <option value="长期观察">长期观察</option>
+                <option value="短线+长期">短线+长期</option>
+                <option value="风险观察">风险观察</option>
+              </select>
+            </label>
+            <label class="stack-field">
+              <span>止损价</span>
+              <input id="addStockStopLoss" type="number" min="0" step="0.01" placeholder="可留空">
+            </label>
+            <button class="primary-button add-stock-button" id="addStockButton" type="button">添加/更新</button>
+          </div>
+          <p class="inline-status" id="addStockStatus">输入股票代码后即可获取真实行情。</p>
+        </section>
+
+        <section class="view is-active" id="overviewView">
+          <div class="board-panel">
+            <div class="section-heading">
+              <div>
+                <h2>今日提醒队列</h2>
+                <p id="lastUpdated">等待数据刷新</p>
+              </div>
+              <button class="ghost-button" id="refreshButton" type="button">重新分析</button>
+            </div>
+            <div class="alert-list" id="alertList"></div>
+          </div>
+
+          <div class="table-shell">
+            <div class="table-header">
+              <div class="table-title-group">
+                <h2>自选股</h2>
+                <span id="stockTableCount">0只</span>
+              </div>
+              <label class="search-field">
+                <span>搜索</span>
+                <input id="searchInput" type="search" placeholder="代码、名称或行业">
+              </label>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>股票</th>
+                    <th>行业</th>
+                    <th>风格</th>
+                    <th>现价</th>
+                    <th>涨跌幅</th>
+                    <th>量比 <span class="help-tip" title="当前成交量相对近期平均成交量的倍数。数值越高，说明成交突然放大；需要结合涨跌方向判断。">?</span></th>
+                    <th>短线 <span class="help-tip" title="根据现价与5/10/20日均线关系粗略判断短线结构：强、中性、弱。它只看价格结构，不代表买卖建议。">?</span></th>
+                    <th>长期质量 <span class="help-tip" title="根据ROE、营收同比、净利同比、负债率、估值等财务指标粗略打标签。数据缺失时会显示待补充或需谨慎。">?</span></th>
+                    <th>风险 <span class="help-tip" title="综合跌幅、放量下跌、接近止损、均线转弱、持仓计划和部分财务信号得到的提醒等级：高、中、低。">?</span></th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="stockTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="reportView">
+          <div class="board-panel">
+            <div class="section-heading">
+              <div>
+                <h2>每日收盘简报</h2>
+                <p>复制到交易日志，收盘后做一次纪律复盘。</p>
+              </div>
+              <div class="section-actions">
+                <button class="ghost-button" id="reportLlmButton" type="button">生成LLM解读</button>
+                <button class="primary-button" id="downloadReportButton" type="button">下载TXT</button>
+              </div>
+            </div>
+            <pre class="report-box" id="dailyReport"></pre>
+            <section class="llm-panel" aria-label="LLM简报解读">
+              <div class="llm-panel-header">
+                <h3>LLM简报解读</h3>
+                <span id="reportLlmMeta">等待生成</span>
+              </div>
+              <div class="llm-output" id="reportLlmOutput">在右上角配置大模型后，可以让 AI 把规则信号整理成复盘摘要。</div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="analysisView">
+          <div class="analysis-layout">
+            <aside class="stock-picker" aria-label="选择股票">
+              <label class="search-field stacked">
+                <span>选择个股</span>
+                <input id="analysisSearch" type="search" placeholder="输入代码或名称">
+              </label>
+              <div id="stockPickerList" class="picker-list"></div>
+            </aside>
+            <article class="analysis-card" id="analysisCard"></article>
+          </div>
+        </section>
+
+      </section>
+    </main>
+  </div>
+  <div class="global-tooltip" id="globalTooltip" role="tooltip" hidden></div>
+
+  <dialog class="edit-dialog help-dialog" id="helpDialog">
+    <div class="edit-form help-content">
+      <div class="edit-header">
+        <div>
+          <h2>研策台使用说明</h2>
+          <p>不用懂技术，按下面的步骤就可以开始使用。</p>
+        </div>
+        <button class="text-button" id="helpCloseButton" type="button">关闭</button>
+      </div>
+
+      <section class="help-quick-start">
+        <h3>第一次使用，只需要做 3 件事</h3>
+        <ol class="help-steps">
+          <li><strong>添加股票</strong><span>在左侧“添加股票”中输入 6 位股票代码，例如 600519，然后点击添加。</span></li>
+          <li><strong>查看分析</strong><span>点击“个股”，选择股票后查看行情、趋势、财务、风险和事件信息。</span></li>
+          <li><strong>需要 AI 时再配置</strong><span>点击右上角“大模型配置”，填入自己的模型和 API Key；不配置也能正常使用规则看板。</span></li>
+        </ol>
+      </section>
+
+      <div class="help-grid">
+        <section class="help-card">
+          <h3>看板、简报、个股分别看什么？</h3>
+          <ul>
+            <li><strong>看板：</strong>快速查看所有股票的涨跌、趋势、风险和提醒。</li>
+            <li><strong>简报：</strong>汇总当天值得关注的变化，可以复制或下载。</li>
+            <li><strong>个股：</strong>查看一只股票的详细数据，并生成对应观察风格的 AI 报告。</li>
+          </ul>
+        </section>
+        <section class="help-card">
+          <h3>观察风格有什么用？</h3>
+          <p>观察风格决定 AI 分析时关注什么。短线更重视量价和趋势，长期更重视财务和经营，风险观察会优先检查回撤和风险事件。</p>
+          <p>需要修改时，在股票列表中点击“编辑”。</p>
+        </section>
+        <section class="help-card">
+          <h3>大模型怎么选？</h3>
+          <ul>
+            <li><strong>自动：</strong>推荐使用，先尝试浏览器直连，不行再使用网站代理。</li>
+            <li><strong>浏览器直连：</strong>数据直接发给模型服务商，但部分模型可能不支持。</li>
+            <li><strong>网站代理：</strong>兼容性较好，请求经过网站但不会被研策台保存。</li>
+          </ul>
+        </section>
+        <section class="help-card">
+          <h3>我的数据保存在哪里？</h3>
+          <p>自选股、持仓设置、观察理由和 AI 报告都保存在当前浏览器，不会保存到研策台云端数据库。</p>
+          <p>更换浏览器、清理网站数据或更换电脑前，请先点击“导出本地备份”。</p>
+        </section>
+        <section class="help-card">
+          <h3>如何备份和恢复？</h3>
+          <ul>
+            <li>点击“导出本地备份”，下载 JSON 备份文件。</li>
+            <li>在另一台电脑点击“导入本地备份”，选择这个文件。</li>
+            <li>为了安全，备份文件不包含 API Key，恢复后需要重新填写。</li>
+          </ul>
+        </section>
+        <section class="help-card">
+          <h3>遇到问题怎么办？</h3>
+          <ul>
+            <li>直接打开研策台网页即可，不需要安装或启动其他程序。</li>
+            <li>AI 无法使用：重新打开“大模型配置”，检查页面给出的验证结果。</li>
+            <li>行情没更新：点击“刷新真实数据”。</li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="help-warning">
+        <strong>请注意：</strong>研策台是研究和复盘工具，不会自动下单，也不构成投资建议。AI 可能出错，重要信息请以交易所公告和正式财务报告为准。
+      </div>
+      <div class="edit-actions">
+        <button class="primary-button" id="helpDoneButton" type="button">我知道了</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="edit-dialog model-dialog" id="modelConfigDialog">
+    <form class="edit-form" id="modelConfigForm" method="dialog">
+      <div class="edit-header">
+        <div>
+          <h2>大模型配置</h2>
+          <p>配置只保存在当前浏览器，研策台不会把它写入云端数据库。</p>
+        </div>
+        <button class="text-button" id="modelConfigCancelButton" type="button">关闭</button>
+      </div>
+      <div class="edit-grid model-config-grid">
+        <label class="stack-field">
+          <span>调用方式</span>
+          <select id="modelCallMode">
+            <option value="auto">自动（直连失败后代理）</option>
+            <option value="direct">浏览器直连</option>
+            <option value="proxy">当前网站无状态代理</option>
+          </select>
+        </label>
+        <label class="stack-field">
+          <span>服务商</span>
+          <select id="modelProvider">
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option>
+            <option value="custom">OpenAI兼容服务</option>
+          </select>
+        </label>
+        <label class="stack-field"><span>模型名称</span><input id="modelName" type="text" placeholder="例如 deepseek-chat"></label>
+        <label class="stack-field wide-field"><span>接口地址</span><input id="modelBaseUrl" type="url" placeholder="例如 https://api.deepseek.com"></label>
+        <label class="stack-field wide-field"><span>API Key</span><input id="modelApiKey" type="password" autocomplete="off" placeholder="仅保存在当前浏览器"></label>
+        <label class="stack-field"><span>最大输出 Tokens</span><input id="modelMaxTokens" type="number" min="256" max="16000" step="256" value="3200"></label>
+      </div>
+      <p class="model-privacy-note" id="modelPrivacyNote">自动模式优先由浏览器直接调用模型；如果被跨域策略阻止，会回退到当前网站的无状态代理。</p>
+      <p class="inline-status" id="modelConfigStatus">尚未保存浏览器配置。</p>
+      <div class="edit-actions model-config-actions">
+        <button class="text-button danger-text" id="clearModelConfigButton" type="button">清除配置</button>
+        <button class="ghost-button" type="button" data-close-model-config>取消</button>
+        <button class="primary-button" id="saveModelConfigButton" type="submit">验证并保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="edit-dialog" id="editDialog">
+    <form class="edit-form" id="editForm" method="dialog">
+      <div class="edit-header">
+        <div>
+          <h2>编辑个股设置</h2>
+          <p>这些是你的本地观察计划，不会覆盖真实行情数据。</p>
+        </div>
+        <button class="text-button" id="editCancelButton" type="button">关闭</button>
+      </div>
+      <input id="editCode" type="hidden">
+      <div class="edit-grid">
+        <label class="stack-field"><span>显示名称</span><input id="editName" type="text"></label>
+        <label class="stack-field"><span>观察风格</span><select id="editStyle"><option value="短线观察">短线观察</option><option value="长期观察">长期观察</option><option value="短线+长期">短线+长期</option><option value="风险观察">风险观察</option><option value="等待确认">等待确认</option></select></label>
+        <label class="stack-field"><span>持仓状态</span><select id="editHoldingStatus"><option value="观察中">观察中</option><option value="已持有">已持有</option><option value="轻仓">轻仓</option><option value="重仓">重仓</option><option value="已清仓">已清仓</option><option value="暂停观察">暂停观察</option></select></label>
+        <label class="stack-field"><span>成本价</span><input id="editCostPrice" type="number" min="0" step="0.01" placeholder="可留空"></label>
+        <label class="stack-field"><span>仓位比例(%)</span><input id="editPositionPct" type="number" min="0" max="100" step="0.1" placeholder="可留空"></label>
+        <label class="stack-field"><span>止损价</span><input id="editStopLoss" type="number" min="0" step="0.01" placeholder="可留空"></label>
+        <label class="stack-field"><span>观察价位</span><input id="editTargetPrice" type="number" min="0" step="0.01" placeholder="可留空"></label>
+        <label class="stack-field"><span>计划日期</span><input id="editPlanDate" type="date"></label>
+        <label class="stack-field wide-field"><span>观察理由</span><textarea id="editWatchReason" rows="3" placeholder="比如板块逻辑、业绩跟踪、形态观察"></textarea></label>
+        <label class="stack-field wide-field"><span>事件备注</span><textarea id="editEvent" rows="3" placeholder="公告、财报、解禁、减持、你的复盘记录"></textarea></label>
+      </div>
+      <div class="edit-actions">
+        <button class="ghost-button" type="button" data-close-edit>取消</button>
+        <button class="primary-button" type="submit">保存设置</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="src/local-data.js"></script>
+  <script src="src/app.js"></script>
+  <script src="src/agent-llm.js"></script>
+</body>
+</html>
