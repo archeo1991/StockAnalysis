@@ -33,7 +33,8 @@ const llmState = {
   model: "",
   config: loadLlmConfig(),
   stockInsights: new Map(),
-  dataLoadVersion: 0
+  dataLoadVersion: 0,
+  directUnavailable: false
 };
 
 const LLM_CALL_MODES = {
@@ -186,6 +187,20 @@ async function generateStockInsight(stock) {
   }
 }
 
+async function fetchDailyBriefContext(payload, signal) {
+  const stocks = (payload?.stocks || []).slice(0, 8).map((stock) => ({
+    code: stock.code,
+    name: stock.name,
+    style: stock.style
+  }));
+  return fetchJson(`${LLM_AGENT_URL}/api/brief-context`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stocks }),
+    signal
+  });
+}
+
 async function generateReportInsight() {
   if (!llmUi.reportButton || !llmUi.reportOutput || !llmUi.reportMeta) return;
 
@@ -197,11 +212,15 @@ async function generateReportInsight() {
   llmUi.reportButton.disabled = true;
   llmUi.reportButton.textContent = "生成中";
   llmUi.reportMeta.textContent = `模型：${llmState.model}`;
-  setMarkdownOutput(llmUi.reportOutput, "AI正在把规则提醒整理成收盘复盘摘要...");
+  setMarkdownOutput(llmUi.reportOutput, "AI正在生成收盘复盘摘要...");
   const operation = window.yancetaiOperations?.startRequest();
 
   try {
-    const result = await invokeLlm("daily-brief", buildReportLlmPayload(), null, operation?.signal);
+    const basePayload = buildReportLlmPayload();
+    const contextResult = await fetchDailyBriefContext(basePayload, operation?.signal);
+    if (operation && !operation.isCurrent()) return;
+    const payload = { ...basePayload, externalContext: contextResult.externalContext };
+    const result = await invokeLlm("daily-brief", payload, null, operation?.signal);
     if (operation && !operation.isCurrent()) return;
     const reportText = appendCompletionNotice(result.text || "模型没有返回内容。", result);
     await LocalDataStore.saveDailyBrief(reportText);
@@ -518,10 +537,12 @@ function buildReportLlmPayload() {
       pb: stock.pb,
       marketCap: stock.marketCap
     })),
+    externalDataRequest: "生成前补充各股票可获取的外部行情、新闻、公告事件和财务摘要，并标明来源与缺失项。",
     constraints: [
       "不要给出买入、卖出、目标价等直接交易指令。",
       "先总结最值得复盘的风险，再给观察清单。",
-      "把短线和长期逻辑分开。"
+      "把短线和长期逻辑分开。",
+      "外部信息获取失败时明确说明，不得编造。"
     ]
   };
 }
@@ -542,7 +563,7 @@ function buildDirectMessages(task, payload) {
   }
   return [
     { role: "system", content: common },
-    { role: "user", content: `请将以下规则报告和股票数据整理为每日复盘摘要。先总结风险，再列出值得跟踪的股票、相互矛盾的信号和下一步观察清单。\n\n${JSON.stringify(payload, null, 2)}` }
+    { role: "user", content: `请将以下规则报告和股票数据整理为简洁的每日复盘摘要，控制在1000字以内。先总结风险，再列出值得跟踪的股票、相互矛盾的信号和下一步观察清单。必须结合 externalContext 中补充的外部行情、新闻、公告事件和财务摘要；引用时标明股票、日期和来源，缺失信息明确说明，不得编造。\n\n${JSON.stringify(payload)}` }
   ];
 }
 
@@ -575,31 +596,46 @@ async function invokeLlmDirect(task, payload, config, signal) {
 }
 
 async function invokeLlmProxy(task, payload, config, baseUrl = LLM_AGENT_URL, signal) {
-  return fetchJson(`${String(baseUrl || "").replace(/\/+$/, "")}/api/llm`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ task, payload, llmConfig: config }),
-    signal
-  });
+  try {
+    return await fetchJson(`${String(baseUrl || "").replace(/\/+$/, "")}/api/llm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, payload, llmConfig: config }),
+      signal
+    });
+  } catch (error) {
+    if (/请求超时|timeout/i.test(error.message || "")) {
+      throw new Error("模型响应超时，请重试；若持续出现，请在大模型配置中选择响应更快的模型。 ");
+    }
+    throw error;
+  }
 }
 
 async function invokeLlm(task, payload, configOverride = null, signal) {
   const sourceConfig = configOverride || getEffectiveLlmConfig();
-  const config = task === "config-test" ? { ...sourceConfig, maxTokens: 16 } : sourceConfig;
+  const taskMaxTokens = task === "config-test" ? 16 : task === "daily-brief" ? Math.min(sourceConfig.maxTokens || 3200, 1400) : sourceConfig.maxTokens;
+  const config = { ...sourceConfig, maxTokens: taskMaxTokens };
   const mode = config?.callMode || "auto";
   if (mode === "direct") return invokeLlmDirect(task, payload, config, signal);
   if (mode === "proxy") return invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
+  if (llmState.directUnavailable && task !== "config-test") {
+    return invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
+  }
   try {
     return await invokeLlmDirect(task, payload, config, signal);
   } catch (directError) {
     const transportError = directError instanceof TypeError || /failed to fetch|networkerror|load failed|cors/i.test(directError.message || "");
     if (!transportError) throw directError;
+    llmState.directUnavailable = true;
     try {
       const result = await invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
       result.channelNotice = `浏览器直连受到跨域或网络限制，已自动改用网站无状态代理。`;
       return result;
     } catch (proxyError) {
-      throw new Error(`浏览器直连失败：${directError.message}；代理调用失败：${proxyError.message}`);
+      if (/请求超时|timeout/i.test(proxyError.message || "")) {
+        throw new Error("模型响应超时，请重试；若持续出现，请在大模型配置中选择响应更快的模型。 ");
+      }
+      throw new Error(`网站代理调用失败：${proxyError.message}`);
     }
   }
 }
@@ -647,7 +683,7 @@ function updateCallModeUi() {
   const mode = llmUi.callMode.value;
   const notes = {
     auto: "自动模式优先由浏览器直接调用模型；如果被跨域策略阻止，会回退到当前网站的无状态代理。",
-    direct: "API Key 和分析内容直接从浏览器发送给模型服务商，不经过研策台服务器；模型接口必须允许浏览器跨域请求。",
+    direct: "API Key 和完整分析内容直接从浏览器发送给模型服务商；生成简报时，网站仅接收股票代码、名称和观察风格，用于补充公开信息。模型接口必须允许浏览器跨域请求。",
     proxy: "API Key 和分析内容会在本次请求中经过当前网站的无状态代理，但不会保存到云端数据库。"
   };
   llmUi.privacyNote.textContent = notes[mode] || notes.auto;
@@ -682,6 +718,10 @@ async function handleLlmConfigSubmit(event) {
     apiKey: llmUi.apiKey.value.trim(),
     maxTokens: Number(llmUi.maxTokens.value || 3200)
   };
+  const previousConfig = getEffectiveLlmConfig();
+  const connectionChanged = !previousConfig || ["callMode", "provider", "model", "baseUrl", "apiKey"]
+    .some((key) => previousConfig[key] !== config[key]);
+  if (connectionChanged) llmState.directUnavailable = false;
   if (!config.model || !config.baseUrl || !config.apiKey) {
     llmUi.configStatus.className = "inline-status error";
     llmUi.configStatus.textContent = "配置不完整，请填写模型名称、接口地址和 API Key。";

@@ -27,7 +27,9 @@
 - LLM 仅有三种模式：`auto`、`direct`、`proxy`；本地 `proxy` 由当前 Node 服务承载。
 - JSON 备份必须保持 `format: "yancetai-backup"`、`version: 1`，导出时必须清空 `llmConfig.apiKey`。
 - 当前没有面向用户的 CSV 功能，不要恢复或文档化旧 CSV 入口。
-- Vercel 的 `/api/health`、`/api/llm`、`/api/stock` 由 `api/*.js` 承载；`/health` 重写到 `/api/health`。
+- API 包括 `/api/health`、`/api/llm`、`/api/stock`、`/api/brief-context`；Vercel 部署时每个路由都必须有对应的 `api/*.js` 入口，`/health` 重写到 `/api/health`。
+- `/api/brief-context` 只允许接收最多 8 只股票的代码、名称和观察风格；不要扩展为接收持仓、仓位、用户备注或完整规则报告。
+- 简报上下文按 IP 每分钟默认最多 6 次，股票级补充并发为 3；不要移除输入上限、独立限流或并发控制。
 
 ## 安全与当前状态
 

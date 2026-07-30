@@ -45,6 +45,10 @@ const els = {
   addStockButton: document.getElementById("addStockButton"),
   refreshRealDataButton: document.getElementById("refreshRealDataButton"),
   addStockStatus: document.getElementById("addStockStatus"),
+  deleteStockDialog: document.getElementById("deleteStockDialog"),
+  deleteStockMessage: document.getElementById("deleteStockMessage"),
+  deleteStockCancelButton: document.getElementById("deleteStockCancelButton"),
+  deleteStockConfirmButton: document.getElementById("deleteStockConfirmButton"),
   editDialog: document.getElementById("editDialog"),
   editForm: document.getElementById("editForm"),
   editCode: document.getElementById("editCode"),
@@ -78,6 +82,7 @@ function getAgentBaseUrl() {
 
 const AGENT_API_BASE_URL = getAgentBaseUrl();
 let stockSaveQueue = Promise.resolve();
+let pendingDeleteCode = null;
 let operationGeneration = 0;
 const activeRequestControllers = new Set();
 const stockMembershipVersions = new Map();
@@ -371,10 +376,29 @@ async function refreshSingleStock(code, button) {
   }
 }
 
-async function deleteSingleStock(code) {
+function closeDeleteStockDialog() {
+  pendingDeleteCode = null;
+  els.deleteStockDialog?.close();
+}
+
+function openDeleteStockDialog(code) {
   const stock = state.stocks.find((item) => item.code === code);
-  if (!stock) return;
-  if (!confirm(`确认删除 ${stock.code} ${stock.name}？`)) return;
+  if (!stock || !els.deleteStockDialog) return;
+  pendingDeleteCode = stock.code;
+  els.deleteStockMessage.textContent = `将删除 ${stock.code} ${stock.name} 及其本地观察设置。此操作不会影响其他股票。`;
+  els.deleteStockDialog.showModal();
+  els.deleteStockConfirmButton?.focus();
+}
+
+async function confirmDeleteStock() {
+  const code = pendingDeleteCode;
+  const stock = state.stocks.find((item) => item.code === code);
+  if (!stock) {
+    closeDeleteStockDialog();
+    return;
+  }
+  els.deleteStockConfirmButton.disabled = true;
+  els.deleteStockConfirmButton.textContent = "删除中";
   bumpStockMembershipVersion(code);
   state.stocks = state.stocks.filter((item) => item.code !== code);
   if (state.selectedCode === code) state.selectedCode = state.stocks[0]?.code || null;
@@ -385,6 +409,10 @@ async function deleteSingleStock(code) {
     setAddStockStatus(`已删除 ${stock.code} ${stock.name}。`, "success");
   } catch (error) {
     setAddStockStatus(`删除已更新到当前页面，但保存失败：${formatFetchError(error)}。`, "error");
+  } finally {
+    els.deleteStockConfirmButton.disabled = false;
+    els.deleteStockConfirmButton.textContent = "删除股票";
+    closeDeleteStockDialog();
   }
 }
 
@@ -413,7 +441,7 @@ function handleStockRowAction(event) {
   if (!code) return;
   if (action === "refresh") refreshSingleStock(code, button);
   if (action === "edit") openEditStockDialog(code);
-  if (action === "delete") deleteSingleStock(code);
+  if (action === "delete") openDeleteStockDialog(code);
 }
 
 async function saveEditForm(event) {
@@ -1405,6 +1433,16 @@ function bindEvents() {
   });
 
   els.stockTable?.addEventListener("click", handleStockRowAction);
+
+  els.deleteStockCancelButton?.addEventListener("click", closeDeleteStockDialog);
+  els.deleteStockConfirmButton?.addEventListener("click", confirmDeleteStock);
+  els.deleteStockDialog?.addEventListener("click", (event) => {
+    if (event.target === els.deleteStockDialog) closeDeleteStockDialog();
+  });
+  els.deleteStockDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeDeleteStockDialog();
+  });
 
   els.editForm?.addEventListener("submit", saveEditForm);
   els.editCancelButton?.addEventListener("click", () => els.editDialog?.close());

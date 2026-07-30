@@ -44,6 +44,7 @@ const LLM_RESPONSE_MAX_BYTES = Number(process.env.LLM_RESPONSE_MAX_BYTES || 2_00
 const STOCK_CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 15_000);
 const STOCK_RATE_LIMIT_WINDOW_MS = Number(process.env.STOCK_RATE_LIMIT_WINDOW_MS || 60_000);
 const STOCK_RATE_LIMIT_MAX = Number(process.env.STOCK_RATE_LIMIT_MAX || 30);
+const BRIEF_CONTEXT_RATE_LIMIT_MAX = Number(process.env.BRIEF_CONTEXT_RATE_LIMIT_MAX || 6);
 const ALLOW_PRIVATE_LLM_HOSTS = /^(1|true|yes)$/i.test(process.env.ALLOW_PRIVATE_LLM_HOSTS || "");
 const OFFICIAL_LLM_HOSTS = {
   deepseek: new Set(["api.deepseek.com"]),
@@ -52,6 +53,7 @@ const OFFICIAL_LLM_HOSTS = {
 const stockCache = new Map();
 const stockInFlight = new Map();
 const stockRateLimits = new Map();
+const briefContextRateLimits = new Map();
 
 class HttpError extends Error {
   constructor(statusCode, message, code = "") {
@@ -120,6 +122,14 @@ async function handleAgentRequest(request, response) {
         const nameOverride = url.searchParams.get("name") || "";
         const stock = await getCachedStockData({ code, style, stopLoss, nameOverride });
         sendJson(response, 200, { stock });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/brief-context") {
+        enforceBriefContextRateLimit(request);
+        const body = await readJson(request);
+        const externalContext = await buildDailyBriefContext(body.stocks);
+        sendJson(response, 200, { externalContext });
         return;
       }
 
@@ -280,12 +290,15 @@ function buildMessages(task, payload) {
         content: [
           "请基于下面的自选股规则简报，生成一份收盘复盘摘要。",
           "要求：",
-          "1. 先列最需要关注的风险，再列可继续观察的机会。",
-          "2. 区分短线信号和长期逻辑。",
-          "3. 最后给出3个复盘问题。",
-          "4. 不要给买卖建议，不要写目标价。",
+          "1. 全文控制在1000字以内，优先输出关键信息，避免重复数据和套话。",
+          "2. 先列最需要关注的风险，再列可继续观察的机会。",
+          "3. 区分短线信号和长期逻辑。",
+          "4. 必须结合 externalContext 中即时补充的外部行情、新闻、公告事件和财务摘要；引用时标明股票、日期和来源。",
+          "5. externalContext 中缺失或获取失败的信息必须明确说明，不能编造或把用户备注当成正式公告。",
+          "6. 最后给出3个复盘问题。",
+          "7. 不要给买卖建议，不要写目标价。",
           "",
-          JSON.stringify(payload, null, 2)
+          JSON.stringify(payload)
         ].join("\n")
       }
     ];
@@ -328,6 +341,108 @@ async function enrichLlmPayload(task, payload) {
       }
     };
   }
+}
+
+async function buildDailyBriefContext(inputStocks) {
+  if (!Array.isArray(inputStocks) || inputStocks.length === 0) {
+    throw new HttpError(400, "请至少提供一只股票。 ");
+  }
+  if (inputStocks.length > 8) {
+    throw new HttpError(400, "每次最多补充8只股票。 ");
+  }
+  const stocks = inputStocks.map((stock) => ({
+    code: normalizeStockCode(stock?.code || ""),
+    name: String(stock?.name || "").trim().slice(0, 40),
+    style: String(stock?.style || "短线观察").trim().slice(0, 20)
+  }));
+  const results = await mapWithConcurrency(stocks, 3, async (stock) => {
+    const code = normalizeStockCode(stock.code || "");
+    if (!code) return { code: stock.code || "", name: stock.name || "", status: "missing", error: "股票代码无效" };
+    try {
+      const [fresh, news] = await Promise.all([
+        withTimeout(
+          () => getCachedStockData({
+            code,
+            style: stock.style || "短线观察",
+            stopLoss: Number(stock.stopLoss || 0),
+            nameOverride: stock.name || ""
+          }),
+          Math.max(REMOTE_FETCH_TIMEOUT_MS, SINGLE_FETCH_TIMEOUT_MS) + 2500,
+          `${code} 行情和财务补充超时`
+        ),
+        withTimeout(
+          (signal) => fetchLatestStockNewsWithFallback({ code, name: stock.name || "" }, signal),
+          NEWS_TIMEOUT_MS,
+          `${code} 新闻和公告补充超时`
+        ).catch((error) => ({ items: [], status: "missing", source: "", sourceUrls: [], errors: [error.message] }))
+      ]);
+      return {
+        code: fresh.code,
+        name: fresh.name,
+        status: "ok",
+        fetchedAt: fresh.fetchedAt,
+        market: {
+          price: fresh.price,
+          changePct: fresh.changePct,
+          volumeRatio: fresh.volumeRatio,
+          tradeTime: fresh.tradeTime,
+          ma5: fresh.ma5,
+          ma10: fresh.ma10,
+          ma20: fresh.ma20,
+          high20: fresh.high20,
+          low20: fresh.low20,
+          change20d: fresh.change20d,
+          change60d: fresh.change60d,
+          volatility20: fresh.volatility20,
+          pe: fresh.pe,
+          pb: fresh.pb,
+          marketCap: fresh.marketCap
+        },
+        finance: {
+          reportDate: fresh.financeReportDate,
+          roe: fresh.roe,
+          revenueYoY: fresh.revenueYoY,
+          profitYoY: fresh.profitYoY,
+          debtRatio: fresh.debtRatio,
+          grossMargin: fresh.grossMargin,
+          netMargin: fresh.netMargin,
+          revenue: fresh.revenue,
+          netProfit: fresh.netProfit
+        },
+        latestNewsAndAnnouncements: (news.items || []).slice(0, 3).map((item) => ({
+          date: item.date || item.publishTime || "",
+          source: item.source || "",
+          title: item.title || ""
+        })),
+        newsStatus: news.status,
+        announcementsAndEvents: (fresh.autoEvents || []).slice(0, 4),
+        sourceStatus: fresh.dataStatus || {}
+      };
+    } catch (error) {
+      return { code, name: stock.name || "", status: "missing", error: error.message || "外部信息获取失败" };
+    }
+  });
+
+  return {
+    fetchedAt: new Date().toISOString(),
+    coverage: `${results.filter((item) => item.status === "ok").length}/${results.length}`,
+    note: "以下为生成简报时即时补充的外部行情、公告事件和财务摘要；缺失项不得编造。",
+    stocks: results
+  };
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function run() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return results;
 }
 
 function withTimeout(operation, ms, message, parentSignal) {
@@ -559,21 +674,29 @@ function getClientIp(request) {
   return forwarded || request.socket?.remoteAddress || "unknown";
 }
 
-function enforceStockRateLimit(request) {
+function enforceRateLimit(request, store, maxRequests) {
   const now = Date.now();
   const ip = getClientIp(request);
-  const current = stockRateLimits.get(ip);
+  const current = store.get(ip);
   if (!current || now - current.startedAt >= STOCK_RATE_LIMIT_WINDOW_MS) {
-    stockRateLimits.set(ip, { startedAt: now, count: 1 });
-    return;
+    store.set(ip, { startedAt: now, count: 1 });
+  } else {
+    current.count += 1;
+    if (current.count > maxRequests) throw new HttpError(429, "请求过于频繁，请稍后再试。");
   }
-  current.count += 1;
-  if (current.count > STOCK_RATE_LIMIT_MAX) throw new HttpError(429, "请求过于频繁，请稍后再试。");
-  if (stockRateLimits.size > 1000) {
-    for (const [key, value] of stockRateLimits) {
-      if (now - value.startedAt >= STOCK_RATE_LIMIT_WINDOW_MS) stockRateLimits.delete(key);
+  if (store.size > 1000) {
+    for (const [key, value] of store) {
+      if (now - value.startedAt >= STOCK_RATE_LIMIT_WINDOW_MS) store.delete(key);
     }
   }
+}
+
+function enforceStockRateLimit(request) {
+  enforceRateLimit(request, stockRateLimits, STOCK_RATE_LIMIT_MAX);
+}
+
+function enforceBriefContextRateLimit(request) {
+  enforceRateLimit(request, briefContextRateLimits, BRIEF_CONTEXT_RATE_LIMIT_MAX);
 }
 
 function stockRequestKey({ code, style, stopLoss, nameOverride }) {
