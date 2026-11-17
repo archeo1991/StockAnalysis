@@ -45,7 +45,8 @@ param(
     [int]$KeepReleases = 5,
     [switch]$WhatIfOnly,
     [switch]$WithNetworkTests,
-    [switch]$AllowDirty
+    [switch]$AllowDirty,
+    [switch]$SkipRemoteValidation
 )
 
 $ErrorActionPreference = "Stop"
@@ -159,7 +160,7 @@ try {
 
     # ---------------------------------------------------------------- 6/8
     Write-Step "6/8 切换 current 并重载 pm2"
-    $prevRelease = (& ssh $SshHost "readlink -f '$AppDir/current' 2>/dev/null || true" | Out-String).Trim()
+    $prevRelease = (& ssh $SshHost "if [ -L '$AppDir/current' ]; then readlink -f '$AppDir/current'; fi" | Out-String).Trim()
     if ($prevRelease) { Write-Note "上一个版本：$($prevRelease.Split('/')[-1])" }
     else { Write-Note "首次发布，没有可回滚的旧版本" }
 
@@ -169,37 +170,42 @@ try {
 
     # ---------------------------------------------------------------- 7/8
     Write-Step "7/8 校验线上版本"
-    $healthUrl = "${HealthScheme}://$Domain/api/health"
-    $deadline = (Get-Date).AddSeconds(45)
-    $liveCommit = ""
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 10
-            $liveCommit = [string]$health.build.commit
-            if ($liveCommit -eq $sha) { break }
-            Write-Note "等待新进程生效（线上 commit=$liveCommit）"
-        }
-        catch {
-            Write-Note "健康检查失败：$($_.Exception.Message)"
-        }
-        Start-Sleep -Seconds 3
-    }
-
-    if ($liveCommit -ne $sha) {
-        if ($prevRelease) {
-            Write-Host "`n    线上 commit 是 '$liveCommit'，期望 $short" -ForegroundColor Red
-            Write-Note "开始回滚到 $($prevRelease.Split('/')[-1])"
-            & ssh $SshHost "ln -sfn '$prevRelease' '$AppDir/current'" | Out-Host
-            & ssh $SshHost "pm2 startOrReload '$AppDir/current/deploy/ecosystem.config.js' --update-env --silent" | Out-Host
-            Fail "发布校验失败，已回滚到上一版本"
-        }
-        # 首次发布没有可回滚的版本，而且域名/证书可能还没就绪，这里不判失败。
-        Write-Host "`n    !! 未能通过 $healthUrl 确认版本（多为首次发布、或域名与证书还没配好）" -ForegroundColor Yellow
-        Write-Note "代码已经切换并重启，请手动核对：Invoke-RestMethod $healthUrl | Select-Object -ExpandProperty build"
-        Write-Note "首次发布请先用 -HealthScheme http 或直接访问 http://$Domain 验证，再申请证书"
+    if ($SkipRemoteValidation) {
+        Write-Note "已按参数跳过域名健康校验；请从服务器本机或有 DNS 的环境核验 build.commit"
     }
     else {
-        Write-Ok "线上 commit=$short"
+        $healthUrl = "${HealthScheme}://$Domain/api/health"
+        $deadline = (Get-Date).AddSeconds(45)
+        $liveCommit = ""
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 10
+                $liveCommit = [string]$health.build.commit
+                if ($liveCommit -eq $sha) { break }
+                Write-Note "等待新进程生效（线上 commit=$liveCommit）"
+            }
+            catch {
+                Write-Note "健康检查失败：$($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 3
+        }
+
+        if ($liveCommit -ne $sha) {
+            if ($prevRelease) {
+                Write-Host "`n    线上 commit 是 '$liveCommit'，期望 $short" -ForegroundColor Red
+                Write-Note "开始回滚到 $($prevRelease.Split('/')[-1])"
+                & ssh $SshHost "ln -sfn '$prevRelease' '$AppDir/current'" | Out-Host
+                & ssh $SshHost "pm2 startOrReload '$AppDir/current/deploy/ecosystem.config.js' --update-env --silent" | Out-Host
+                Fail "发布校验失败，已回滚到上一版本"
+            }
+            # 首次发布没有可回滚的版本，而且域名/证书可能还没就绪，这里不判失败。
+            Write-Host "`n    !! 未能通过 $healthUrl 确认版本（多为首次发布、或域名与证书还没配好）" -ForegroundColor Yellow
+            Write-Note "代码已经切换并重启，请手动核对：Invoke-RestMethod $healthUrl | Select-Object -ExpandProperty build"
+            Write-Note "首次发布请先用 -HealthScheme http 或直接访问 http://$Domain 验证，再申请证书"
+        }
+        else {
+            Write-Ok "线上 commit=$short"
+        }
     }
 
     # ---------------------------------------------------------------- 8/8

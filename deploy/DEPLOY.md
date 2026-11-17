@@ -168,6 +168,7 @@ git push
 .\deploy\deploy.ps1 -WithNetworkTests      # 额外跑联网集成测试
 .\deploy\deploy.ps1 -KeepReleases 10       # 多留几个版本
 .\deploy\deploy.ps1 -HealthScheme http     # 首次发布、证书还没下来时用 HTTP 校验
+.\deploy\deploy.ps1 -SkipRemoteValidation  # 域名/DNS 尚未就绪时跳过域名校验，发布后从服务器本机核验
 .\deploy\deploy.ps1 -Domain stock.archeo.cn
 ```
 
