@@ -29,7 +29,18 @@
 - 当前没有面向用户的 CSV 功能，不要恢复或文档化旧 CSV 入口。
 - API 包括 `/api/health`、`/api/llm`、`/api/stock`、`/api/brief-context`；Vercel 部署时每个路由都必须有对应的 `api/*.js` 入口，`/health` 重写到 `/api/health`。
 - `/api/brief-context` 只允许接收最多 8 只股票的代码、名称和观察风格；不要扩展为接收持仓、仓位、用户备注或完整规则报告。
-- 简报上下文按 IP 每分钟默认最多 6 次，股票级补充并发为 3；不要移除输入上限、独立限流或并发控制。
+- 简报上下文按 IP 每分钟默认最多 6 次，股票级补充并发为 3；`/api/llm` 另有每 IP 每分钟 20 次的独立限流。不要移除输入上限、独立限流或并发控制。
+- 行情与K线在服务端统一把成交量换算成“股”（东方财富、腾讯返回“手”），否则量比会相差 100 倍。
+- 数据源只保留东方财富、腾讯、新浪；网易行情/K线接口已失效，东方财富“个股资讯”接口已失效，不要再加回。
+- `/api/health` 的 `build` 字段由部署脚本写入的 `build-info.json` 提供，用于确认线上 commit；本地和 Vercel 下为空字符串，不要据此判断服务健康。
+
+## 发布
+
+- 腾讯云自托管，完整流程见 `deploy/DEPLOY.md`；日常发布执行 `.\deploy\deploy.ps1`。
+- 服务器目录：`/srv/apps/stockanalysis/releases/<时间戳>-<sha>/`，`current` 软链指向当前版本，运行时配置在 `shared/env.json`。
+- 发布前必须 `HEAD == origin/main`；服务器内容只能来自 `git archive HEAD`，不要在服务器上直接改代码。
+- Nginx 托管静态文件并把 `/api/` 反代到 `127.0.0.1:8787`；`X-Forwarded-For` 必须用 `$remote_addr` **覆盖**，否则按 IP 的限流可被伪造头绕过。
+- `index.html`、`src/*.js`、`src/styles.css` 没有内容哈希，禁止对其设置长缓存或 `immutable`。
 
 ## 安全与当前状态
 

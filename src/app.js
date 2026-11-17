@@ -49,6 +49,9 @@ const els = {
   deleteStockMessage: document.getElementById("deleteStockMessage"),
   deleteStockCancelButton: document.getElementById("deleteStockCancelButton"),
   deleteStockConfirmButton: document.getElementById("deleteStockConfirmButton"),
+  resetDataDialog: document.getElementById("resetDataDialog"),
+  resetCancelButton: document.getElementById("resetCancelButton"),
+  resetConfirmButton: document.getElementById("resetConfirmButton"),
   editDialog: document.getElementById("editDialog"),
   editForm: document.getElementById("editForm"),
   editCode: document.getElementById("editCode"),
@@ -120,8 +123,7 @@ function invalidatePendingOperations() {
 }
 
 window.yancetaiOperations = {
-  startRequest: startOperationRequest,
-  isCurrent: (generation) => generation === operationGeneration
+  startRequest: startOperationRequest
 };
 
 function loadStocks() {
@@ -196,12 +198,15 @@ function hasEventRisk(stock) {
   );
 }
 
-function mergeFetchedStock(existing = {}, fresh = {}) {
+function mergeFetchedStock(existing = {}, fresh = {}, overrides = null) {
   const merged = { ...existing, ...fresh };
   const userFields = ["name", "style", "holdingStatus", "costPrice", "positionPct", "stopLoss", "targetPrice", "planDate", "watchReason"];
   userFields.forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(existing, field)) merged[field] = existing[field];
   });
+  // 添加/更新表单里显式填写的名称和止损价要生效，空值才保留原有设置。
+  if (overrides?.name) merged.name = overrides.name;
+  if (hasNumber(overrides?.stopLoss) && overrides.stopLoss > 0) merged.stopLoss = overrides.stopLoss;
   const existingEvent = getUsefulEventText(existing.event);
   const freshEvent = getUsefulEventText(fresh.event);
   const existingAutoEvents = getAutoEvents(existing);
@@ -219,6 +224,10 @@ function mergeFetchedStock(existing = {}, fresh = {}) {
 }
 
 function isLegacySampleData(stocks) {
+  // 只用于识别很早以前内置的演示数据：整份数据都没有接口返回的数据状态。
+  // 真实行情数据一定带 dataStatus，因此不会命中这条规则，避免误删用户自选股。
+  const looksUnfetched = stocks.every((stock) => !stock?.dataStatus && !stock?.dataSource);
+  if (!looksUnfetched) return false;
   const generatedEvents = stocks.filter((stock) => stock.event && !String(stock.event).startsWith("真实行情：") && stock.event !== "CSV导入");
   return stocks.length >= 10 && generatedEvents.length >= 5;
 }
@@ -289,9 +298,11 @@ async function fetchRealStock(code, options = {}) {
 async function upsertStock(stock, options = {}) {
   const index = state.stocks.findIndex((item) => item.code === stock.code);
   if (index >= 0) {
-    state.stocks[index] = options.fromFetch ? mergeFetchedStock(state.stocks[index], stock) : normalizeStoredStock(stock);
+    state.stocks[index] = options.fromFetch
+      ? mergeFetchedStock(state.stocks[index], stock, options.overrides || null)
+      : normalizeStoredStock(stock);
   } else {
-    state.stocks.unshift(options.fromFetch ? mergeFetchedStock({}, stock) : normalizeStoredStock(stock));
+    state.stocks.unshift(options.fromFetch ? mergeFetchedStock({}, stock, options.overrides || null) : normalizeStoredStock(stock));
   }
   state.selectedCode = stock.code;
   state.lastUpdated = new Date();
@@ -313,16 +324,19 @@ async function addStockFromForm() {
   }
   setAddStockStatus("正在获取真实行情，请稍等...", "info");
   const operation = startOperationRequest();
+  const formName = els.addStockName?.value.trim() || "";
+  const formStopLoss = toNumber(els.addStockStopLoss?.value);
   try {
     const stock = await fetchRealStock(code, {
-      name: els.addStockName?.value.trim() || "",
+      name: formName,
       style: els.addStockStyle?.value || "短线观察",
       stopLoss: els.addStockStopLoss?.value || "",
       signal: operation.signal
     });
     if (!operation.isCurrent()) return;
     bumpStockMembershipVersion(stock.code);
-    await upsertStock(stock, { fromFetch: true });
+    // 表单里明确填写了名称/止损价时覆盖旧设置，留空则保留原有安排。
+    await upsertStock(stock, { fromFetch: true, overrides: { name: formName, stopLoss: formStopLoss } });
     if (!operation.isCurrent()) return;
     if (els.addStockCode) els.addStockCode.value = "";
     if (els.addStockName) els.addStockName.value = "";
@@ -413,6 +427,44 @@ async function confirmDeleteStock() {
     els.deleteStockConfirmButton.disabled = false;
     els.deleteStockConfirmButton.textContent = "删除股票";
     closeDeleteStockDialog();
+  }
+}
+
+function openResetDataDialog() {
+  if (!els.resetDataDialog) return;
+  els.resetDataDialog.showModal();
+  els.resetCancelButton?.focus();
+}
+
+function closeResetDataDialog() {
+  els.resetDataDialog?.close();
+}
+
+async function confirmResetLocalData() {
+  const button = els.resetConfirmButton;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "清空中";
+  }
+  try {
+    invalidatePendingOperations();
+    await stockSaveQueue;
+    await LocalDataStore.clearAll();
+    localStorage.removeItem("aStockAgentStocks");
+    state.stocks = [];
+    state.selectedCode = null;
+    state.lastUpdated = new Date();
+    window.dispatchEvent(new CustomEvent("yancetai:local-data-cleared"));
+    render();
+    setAddStockStatus("已清空本地数据。", "success");
+  } catch (error) {
+    alert(error.message || "清空本地数据失败。");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "清空数据";
+    }
+    closeResetDataDialog();
   }
 }
 
@@ -563,10 +615,6 @@ function buildRefreshMessage(success, total, failed, actionName) {
   return `已重新计算本地提醒，但真实行情刷新失败：${sample}${suffix}。`;
 }
 
-function isUsableNumber(value) {
-  return hasNumber(value);
-}
-
 function hasNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -588,11 +636,11 @@ function displayRatio(value) {
 }
 
 function displayOptionalNumber(value, fallback = "待补充") {
-  return isUsableNumber(value) ? formatNumber(value) : fallback;
+  return hasNumber(value) ? formatNumber(value) : fallback;
 }
 
 function displayOptionalPct(value, fallback = "待补充") {
-  return isUsableNumber(value) ? formatPct(value, false) : fallback;
+  return hasNumber(value) ? formatPct(value, false) : fallback;
 }
 
 function displayMoney(value, fallback = "暂无") {
@@ -716,11 +764,11 @@ function riskLevel(stock) {
   const vol = volumeRatio(stock);
   const stopGap = distanceToStop(stock);
 
-  if (isUsableNumber(move) && move <= -state.thresholds.move) score += 2;
-  if (isUsableNumber(vol) && isUsableNumber(move) && vol >= state.thresholds.volume && move < 0) score += 2;
+  if (hasNumber(move) && move <= -state.thresholds.move) score += 2;
+  if (hasNumber(vol) && hasNumber(move) && vol >= state.thresholds.volume && move < 0) score += 2;
   if (stopGap <= state.thresholds.stop) score += 2;
   if (shortTrend(stock) === "weak") score += 1;
-  if (isUsableNumber(stock.profitYoY) && stock.profitYoY < 0) score += 1;
+  if (hasNumber(stock.profitYoY) && stock.profitYoY < 0) score += 1;
   if (hasNumber(stock.positionPct) && stock.positionPct >= 30 && stopGap <= state.thresholds.stop + 2) score += 1;
   if (hasEventRisk(stock)) score += 1;
 
@@ -736,7 +784,7 @@ function buildAlerts(stock) {
   const trend = shortTrend(stock);
   const stopGap = distanceToStop(stock);
 
-  if (isUsableNumber(move) && Math.abs(move) >= state.thresholds.move) {
+  if (hasNumber(move) && Math.abs(move) >= state.thresholds.move) {
     alerts.push({
       code: stock.code,
       name: stock.name,
@@ -748,19 +796,19 @@ function buildAlerts(stock) {
     });
   }
 
-  if (isUsableNumber(vol) && vol >= state.thresholds.volume) {
+  if (hasNumber(vol) && vol >= state.thresholds.volume) {
     alerts.push({
       code: stock.code,
       name: stock.name,
       sector: stock.sector,
-      priority: isUsableNumber(move) && move < 0 ? "high" : "medium",
-      title: isUsableNumber(move) && move < 0 ? "放量下跌" : "放量提醒",
+      priority: hasNumber(move) && move < 0 ? "high" : "medium",
+      title: hasNumber(move) && move < 0 ? "放量下跌" : "放量提醒",
       detail: `${stock.name} 当前量比 ${vol.toFixed(2)}x，高于 ${state.thresholds.volume.toFixed(1)}x。`,
-      reason: isUsableNumber(move) && move < 0 ? "放量下跌通常需要更谨慎，尤其要看是否靠近止损位。" : "量能明显变化，需要结合价格方向和板块热度继续观察。"
+      reason: hasNumber(move) && move < 0 ? "放量下跌通常需要更谨慎，尤其要看是否靠近止损位。" : "量能明显变化，需要结合价格方向和板块热度继续观察。"
     });
   }
 
-  if (isUsableNumber(stock.close) && isUsableNumber(stock.high20) && stock.close >= stock.high20) {
+  if (hasNumber(stock.close) && hasNumber(stock.high20) && stock.close >= stock.high20) {
     alerts.push({
       code: stock.code,
       name: stock.name,
@@ -772,7 +820,7 @@ function buildAlerts(stock) {
     });
   }
 
-  if (isUsableNumber(stock.close) && isUsableNumber(stock.low20) && stock.close <= stock.low20) {
+  if (hasNumber(stock.close) && hasNumber(stock.low20) && stock.close <= stock.low20) {
     alerts.push({
       code: stock.code,
       name: stock.name,
@@ -1166,7 +1214,7 @@ function buildReport(alerts) {
     const item = sectorMap.get(stock.sector) || { count: 0, validCount: 0, totalMove: 0 };
     const move = pct(stock);
     item.count += 1;
-    if (isUsableNumber(move)) {
+    if (hasNumber(move)) {
       item.validCount += 1;
       item.totalMove += move;
     }
@@ -1191,7 +1239,7 @@ function buildReport(alerts) {
     `弱势结构：${weak.length ? weak.map((stock) => stock.name).join("、") : "暂无"}`,
     "",
     "四、板块温度",
-    ...sectors.map((item) => `- ${item.sector}：自选内${item.count}只，有效行情${item.validCount}只，平均涨跌幅 ${isUsableNumber(item.avg) ? formatPct(item.avg) : "待补充"}`),
+    ...sectors.map((item) => `- ${item.sector}：自选内${item.count}只，有效行情${item.validCount}只，平均涨跌幅 ${hasNumber(item.avg) ? formatPct(item.avg) : "待补充"}`),
     "",
     "五、复盘问题",
     "1. 今天想操作的股票，理由是价格信号、事件刺激，还是长期逻辑变化？",
@@ -1213,10 +1261,10 @@ function buildScoreNotes(stock) {
   if (qualityLevel(stock) === "待补充") notes.push("财务质量数据待补充，ROE、营收同比、净利同比和负债率暂不能下结论。");
   if (trend === "strong") notes.push("短线结构偏强，但要确认是不是板块共振，而不是孤立拉升。");
   if (trend === "weak") notes.push("短线结构偏弱，先问自己是否有明确的反转信号再行动。");
-  if (isUsableNumber(move) && Math.abs(move) >= state.thresholds.move) notes.push("今日波动较大，不适合只凭情绪立刻提高仓位。");
+  if (hasNumber(move) && Math.abs(move) >= state.thresholds.move) notes.push("今日波动较大，不适合只凭情绪立刻提高仓位。");
   if (qualityLevel(stock) === "较好") notes.push("长期质量指标相对健康，可以继续跟踪估值和增长是否匹配。");
   if (qualityLevel(stock) === "需谨慎") notes.push("基本面质量或增长指标偏弱，长期持有前需要更严格的理由。");
-  if (isUsableNumber(stock.pe) && stock.pe >= 50) notes.push("估值较高，后续业绩若不兑现，股价波动可能被放大。");
+  if (hasNumber(stock.pe) && stock.pe >= 50) notes.push("估值较高，后续业绩若不兑现，股价波动可能被放大。");
   if (distanceToStop(stock) <= state.thresholds.stop) notes.push("价格接近止损线，优先执行交易纪律，而不是临时改计划。");
   if (!stock.watchReason) notes.push("观察理由还没写，建议补一句你跟踪它的核心原因，避免后续只看涨跌。 ");
   if ((stock.holdingStatus === "已持有" || stock.holdingStatus === "重仓") && !hasNumber(stock.costPrice)) notes.push("已标记持有但未填写成本价，盈亏和纪律提醒会不完整。");
@@ -1522,20 +1570,15 @@ function bindEvents() {
     }
   });
 
-  els.resetButton.addEventListener("click", async () => {
-    try {
-      invalidatePendingOperations();
-      await stockSaveQueue;
-      await LocalDataStore.clearAll();
-      localStorage.removeItem("aStockAgentStocks");
-      state.stocks = [];
-      state.selectedCode = null;
-      state.lastUpdated = new Date();
-      window.dispatchEvent(new CustomEvent("yancetai:local-data-cleared"));
-      render();
-    } catch (error) {
-      alert(error.message || "清空本地数据失败。");
-    }
+  els.resetButton.addEventListener("click", openResetDataDialog);
+  els.resetCancelButton?.addEventListener("click", closeResetDataDialog);
+  els.resetConfirmButton?.addEventListener("click", confirmResetLocalData);
+  els.resetDataDialog?.addEventListener("click", (event) => {
+    if (event.target === els.resetDataDialog) closeResetDataDialog();
+  });
+  els.resetDataDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeResetDataDialog();
   });
 }
 
@@ -1544,7 +1587,6 @@ async function initializeApplication() {
   bindEvents();
   switchView("overview");
   render();
-  window.dispatchEvent(new CustomEvent("yancetai:app-ready"));
 }
 
 initializeApplication();

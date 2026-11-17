@@ -33,8 +33,13 @@ const LocalDataStore = (() => {
       const transaction = db.transaction(STORE_NAME, "readonly");
       const request = transaction.objectStore(STORE_NAME).get(key);
       request.onsuccess = () => resolve(request.result ?? null);
-      request.onerror = () => reject(request.error || new Error("读取浏览器本地数据失败。"));
+      request.onerror = () => {
+        db.close();
+        reject(request.error || new Error("读取浏览器本地数据失败。"));
+      };
       transaction.oncomplete = () => db.close();
+      transaction.onerror = () => db.close();
+      transaction.onabort = () => db.close();
     });
   }
 
@@ -47,7 +52,12 @@ const LocalDataStore = (() => {
         db.close();
         resolve();
       };
-      transaction.onerror = () => reject(transaction.error || new Error("保存浏览器本地数据失败。"));
+      const fail = () => {
+        db.close();
+        reject(transaction.error || new Error("保存浏览器本地数据失败。"));
+      };
+      transaction.onerror = fail;
+      transaction.onabort = fail;
     });
   }
 

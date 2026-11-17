@@ -2,6 +2,7 @@
 .vercel-deploy-cache
 .git
 .agents
+deploy
 *.bat
 *.ps1
 test-*.js

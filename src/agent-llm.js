@@ -44,7 +44,7 @@ const LLM_CALL_MODES = {
 };
 
 const LLM_PROVIDER_DEFAULTS = {
-  deepseek: { providerName: "DeepSeek", model: "deepseek-chat", baseUrl: "https://api.deepseek.com" },
+  deepseek: { providerName: "DeepSeek", model: "deepseek-v4-pro", baseUrl: "https://api.deepseek.com" },
   openai: { providerName: "OpenAI", model: "gpt-4.1-mini", baseUrl: "https://api.openai.com/v1" },
   custom: { providerName: "OpenAI兼容服务", model: "", baseUrl: "" }
 };
@@ -209,6 +209,12 @@ async function generateReportInsight() {
     return;
   }
 
+  if (!state.stocks.length) {
+    setMarkdownOutput(llmUi.reportOutput, "还没有自选股。先添加至少一只股票，再生成 AI 简报解读。");
+    llmUi.reportMeta.textContent = "需要至少一只自选股";
+    return;
+  }
+
   llmUi.reportButton.disabled = true;
   llmUi.reportButton.textContent = "生成中";
   llmUi.reportMeta.textContent = `模型：${llmState.model}`;
@@ -249,7 +255,9 @@ function appendCompletionNotice(text, result) {
   const notices = [];
   if (result?.channelNotice) notices.push(result.channelNotice);
   if (result?.finishReason === "length") {
-    notices.push("本次输出达到模型长度上限，内容可能被截断。可以在大模型配置中调高最大输出 Tokens 后重新生成。");
+    const limit = Number(result?.maxTokens);
+    const limitText = Number.isFinite(limit) ? `${limit} tokens` : "上限";
+    notices.push(`本次输出达到上限（${limitText}），内容可能被截断。可以在大模型配置中调高“最大输出 Tokens”后重新生成；使用 DeepSeek 等思考模式模型时，思维链也会占用这部分额度。`);
   }
   return notices.length ? `${text}\n\n---\n提示：${notices.join("\n\n")}` : text;
 }
@@ -568,6 +576,14 @@ function buildDirectMessages(task, payload) {
 }
 
 async function invokeLlmDirect(task, payload, config, signal) {
+  const body = {
+    model: config.model,
+    messages: buildDirectMessages(task, payload),
+    temperature: task === "config-test" ? 0 : 0.3,
+    max_tokens: task === "config-test" ? 64 : config.maxTokens || 4096
+  };
+  // 连接测试只验证能否连通，不应把额度花在思维链上（DeepSeek 思考模式默认开启）。
+  if (task === "config-test" && config.provider === "deepseek") body.thinking = { type: "disabled" };
   const response = await fetch(`${String(config.baseUrl).replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     signal,
@@ -575,12 +591,7 @@ async function invokeLlmDirect(task, payload, config, signal) {
       "Authorization": `Bearer ${config.apiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model: config.model,
-      messages: buildDirectMessages(task, payload),
-      temperature: task === "config-test" ? 0 : 0.3,
-      max_tokens: task === "config-test" ? 16 : config.maxTokens || 3200
-    })
+    body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || `模型直连失败：${response.status}`);
@@ -613,31 +624,37 @@ async function invokeLlmProxy(task, payload, config, baseUrl = LLM_AGENT_URL, si
 
 async function invokeLlm(task, payload, configOverride = null, signal) {
   const sourceConfig = configOverride || getEffectiveLlmConfig();
-  const taskMaxTokens = task === "config-test" ? 16 : task === "daily-brief" ? Math.min(sourceConfig.maxTokens || 3200, 1400) : sourceConfig.maxTokens;
+  // 个股报告与每日简报都使用配置里的“最大输出 Tokens”；
+  // 思考模式模型的思维链同样消耗该额度，因此不再对简报额外压到 1400。
+  const taskMaxTokens = task === "config-test" ? 16 : Math.max(256, Number(sourceConfig?.maxTokens) || 3200);
   const config = { ...sourceConfig, maxTokens: taskMaxTokens };
   const mode = config?.callMode || "auto";
-  if (mode === "direct") return invokeLlmDirect(task, payload, config, signal);
-  if (mode === "proxy") return invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
-  if (llmState.directUnavailable && task !== "config-test") {
-    return invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
-  }
-  try {
-    return await invokeLlmDirect(task, payload, config, signal);
-  } catch (directError) {
-    const transportError = directError instanceof TypeError || /failed to fetch|networkerror|load failed|cors/i.test(directError.message || "");
-    if (!transportError) throw directError;
-    llmState.directUnavailable = true;
+  let result;
+  if (mode === "direct") {
+    result = await invokeLlmDirect(task, payload, config, signal);
+  } else if (mode === "proxy") {
+    result = await invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
+  } else if (llmState.directUnavailable && task !== "config-test") {
+    result = await invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
+  } else {
     try {
-      const result = await invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
-      result.channelNotice = `浏览器直连受到跨域或网络限制，已自动改用网站无状态代理。`;
-      return result;
-    } catch (proxyError) {
-      if (/请求超时|timeout/i.test(proxyError.message || "")) {
-        throw new Error("模型响应超时，请重试；若持续出现，请在大模型配置中选择响应更快的模型。 ");
+      result = await invokeLlmDirect(task, payload, config, signal);
+    } catch (directError) {
+      const transportError = directError instanceof TypeError || /failed to fetch|networkerror|load failed|cors/i.test(directError.message || "");
+      if (!transportError) throw directError;
+      llmState.directUnavailable = true;
+      try {
+        result = await invokeLlmProxy(task, payload, config, LLM_AGENT_URL, signal);
+        result.channelNotice = "浏览器直连受到跨域或网络限制，已自动改用网站无状态代理。";
+      } catch (proxyError) {
+        if (/请求超时|timeout/i.test(proxyError.message || "")) {
+          throw new Error("模型响应超时，请重试；若持续出现，请在大模型配置中选择响应更快的模型。");
+        }
+        throw new Error(`网站代理调用失败：${proxyError.message}`);
       }
-      throw new Error(`网站代理调用失败：${proxyError.message}`);
     }
   }
+  return { ...result, maxTokens: taskMaxTokens };
 }
 
 async function fetchJson(url, options) {
@@ -662,17 +679,17 @@ function fillLlmConfigForm() {
   const config = llmState.config || {
     callMode: "auto",
     provider: "deepseek",
-    model: "deepseek-chat",
+    model: "deepseek-v4-pro",
     baseUrl: "https://api.deepseek.com",
     apiKey: "",
-    maxTokens: 3200
+    maxTokens: 4096
   };
   llmUi.callMode.value = LLM_CALL_MODES[config.callMode] ? config.callMode : "auto";
   llmUi.provider.value = config.provider || "custom";
   llmUi.model.value = config.model || "";
   llmUi.baseUrl.value = config.baseUrl || "";
   llmUi.apiKey.value = config.apiKey || "";
-  llmUi.maxTokens.value = config.maxTokens || 3200;
+  llmUi.maxTokens.value = config.maxTokens || 4096;
   updateCallModeUi();
   llmUi.configStatus.className = "inline-status";
   llmUi.configStatus.textContent = llmState.config ? `当前已保存：${llmConfigLabel(llmState.config)}。修改后请重新验证。` : "尚未保存配置，请填写后点击“验证并保存”。";
@@ -716,7 +733,7 @@ async function handleLlmConfigSubmit(event) {
     model: llmUi.model.value.trim(),
     baseUrl: llmUi.baseUrl.value.trim().replace(/\/+$/, ""),
     apiKey: llmUi.apiKey.value.trim(),
-    maxTokens: Number(llmUi.maxTokens.value || 3200)
+    maxTokens: Number(llmUi.maxTokens.value || 4096)
   };
   const previousConfig = getEffectiveLlmConfig();
   const connectionChanged = !previousConfig || ["callMode", "provider", "model", "baseUrl", "apiKey"]
@@ -756,8 +773,11 @@ async function handleLlmConfigSubmit(event) {
 window.getLocalLlmConfig = () => llmState.config ? { ...llmState.config } : null;
 window.restoreLocalLlmConfig = (config) => {
   if (!config || typeof config !== "object") return;
-  saveLlmConfig({ ...config, apiKey: "" });
-  llmState.configured = false;
+  // 备份文件有意不包含 API Key：保留当前浏览器已有的 Key，避免导入备份时清空已配置的模型凭据。
+  const apiKey = config.apiKey || llmState.config?.apiKey || "";
+  saveLlmConfig({ ...config, apiKey });
+  llmState.configured = Boolean(apiKey);
+  llmState.directUnavailable = false;
   llmState.model = llmConfigLabel(llmState.config);
   renderLlmStatus();
 };

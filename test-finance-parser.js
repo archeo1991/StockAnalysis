@@ -39,12 +39,6 @@ const tencentKlines = _test.parseTencentKlines([
   ["2026-06-16", "10.5", "10.7", "10.9", "10.2", "222222", "23456789"]
 ]);
 
-const neteaseKlines = _test.parseNeteaseHistoryCsv([
-  "日期,股票代码,名称,收盘价,最高价,最低价,开盘价,前收盘,涨跌额,涨跌幅,成交量,成交金额,换手率",
-  "2026-06-16,600519,贵州茅台,10.7,10.9,10.2,10.5,10.5,0.2,1.9,222222,23456789,0.8",
-  "2026-06-15,600519,贵州茅台,10.5,10.8,9.9,10,10.1,0.4,3.9,123456,12345678,0.5"
-].join("\n"));
-
 const mergedQuote = _test.mergeQuote(
   { code: "600519", name: "贵州茅台", close: 10, high: 10.5, tradeTime: "2026-06-16 14:30:00", source: "源A", sourceUrl: "https://a.example" },
   { close: 10.8, high: 11, low: 9, volume: 1000, tradeTime: "2026-06-16 15:00:00", source: "源B", sourceUrl: "https://b.example" }
@@ -112,20 +106,41 @@ if (finance.reportDate !== "2025-12-31" || finance.sector !== "酿酒行业") {
   throw new Error(`Unexpected finance metadata: ${JSON.stringify(finance)}`);
 }
 
-if (klines.length !== 2 || klines[0].close !== 10.5 || klines[1].volume !== 222222) {
+if (klines.length !== 2 || klines[0].close !== 10.5 || klines[1].volume !== 22222200) {
   throw new Error(`Unexpected kline parse: ${JSON.stringify(klines)}`);
 }
 
-if (tencentKlines.length !== 2 || tencentKlines[0].amount !== 12345678 || tencentKlines[1].high !== 10.9) {
+if (tencentKlines.length !== 2 || tencentKlines[0].amount !== 12345678 || tencentKlines[1].high !== 10.9 || tencentKlines[0].volume !== 12345600) {
   throw new Error(`Unexpected Tencent kline parse: ${JSON.stringify(tencentKlines)}`);
-}
-
-if (neteaseKlines.length !== 2 || neteaseKlines[0].date !== "2026-06-15" || neteaseKlines[1].turnoverRate !== 0.8) {
-  throw new Error(`Unexpected NetEase kline parse: ${JSON.stringify(neteaseKlines)}`);
 }
 
 if (mergedQuote.close !== 10.8 || mergedQuote.high !== 11 || mergedQuote.tradeTime !== "2026-06-16 15:00:00" || mergedQuote.source !== "源A + 源B" || mergedQuote.sourceUrls.length !== 2) {
   throw new Error(`Unexpected quote merge: ${JSON.stringify(mergedQuote)}`);
+}
+
+const threeWayQuote = _test.mergeQuote(mergedQuote, {
+  close: 11,
+  source: "源C",
+  sourceUrl: "https://c.example",
+  tradeTime: "2026-06-16 15:10:00"
+});
+if (threeWayQuote.sources.length !== 3 || threeWayQuote.source !== "源A + 源B + 源C") {
+  throw new Error(`Unexpected multi-source quote merge: ${JSON.stringify(threeWayQuote.sources)}`);
+}
+
+if (_test.quoteTimeValue("20260616150000") <= _test.quoteTimeValue("2026-06-16 14:30:00")) {
+  throw new Error("Unexpected quote time normalization");
+}
+
+const unlockRow = _test.normalizeUnlockRow({
+  SECURITY_NAME_ABBR: "示例股份",
+  FREE_DATE: "2026-06-22 00:00:00",
+  CURRENT_FREE_SHARES: 1060.031,
+  FREE_RATIO: 0.3197,
+  LIFT_MARKET_CAP: 59700.94592
+});
+if (unlockRow.date !== "2026-06-22" || unlockRow.ratio !== 31.97 || unlockRow.shares !== 10600310 || unlockRow.marketCap !== 597009459.2) {
+  throw new Error(`Unexpected unlock row normalization: ${JSON.stringify(unlockRow)}`);
 }
 
 if (historyBaseline.length !== 1 || historyBaseline[0].date !== "2026-06-15") {
@@ -148,6 +163,17 @@ if (financeEvents.length !== 1 || financeEvents[0].type !== "财报异常" || fi
   throw new Error(`Unexpected finance events: ${JSON.stringify(financeEvents)}`);
 }
 
+// 轻微同比下滑不该生成提醒；银行等高杠杆行业的负债率不参与判断。
+const mildDeclineEvents = _test.classifyFinanceEvents({ reportDate: "2026-09-30", profitYoY: -0.25, revenueYoY: 1.9, debtRatio: 20 });
+if (mildDeclineEvents.length !== 0) {
+  throw new Error(`Unexpected mild decline events: ${JSON.stringify(mildDeclineEvents)}`);
+}
+
+const bankFinanceEvents = _test.classifyFinanceEvents({ sector: "银行Ⅱ", reportDate: "2026-09-30", profitYoY: 2.2, revenueYoY: 2.4, debtRatio: 91.5 });
+if (bankFinanceEvents.length !== 0) {
+  throw new Error(`Unexpected bank finance events: ${JSON.stringify(bankFinanceEvents)}`);
+}
+
 if (eventSignals.items.length < 3 || eventSignals.status !== "ok") {
   throw new Error(`Unexpected event signals: ${JSON.stringify(eventSignals)}`);
 }
@@ -160,4 +186,4 @@ if (dedupedNews.length !== 2) {
   throw new Error(`Unexpected news dedupe: ${JSON.stringify(dedupedNews)}`);
 }
 
-console.log(JSON.stringify({ finance, klineCount: klines.length, tencentKlineCount: tencentKlines.length, neteaseKlineCount: neteaseKlines.length, eventSignalCount: eventSignals.items.length, newsCount: dedupedNews.length }));
+console.log(JSON.stringify({ finance, klineCount: klines.length, tencentKlineCount: tencentKlines.length, eventSignalCount: eventSignals.items.length, newsCount: dedupedNews.length }));

@@ -32,6 +32,7 @@ const API_KEY = runtime.apiKey;
 const LLM_BASE_URL = normalizeBaseUrl(runtime.baseUrl || runtime.defaultBaseUrl);
 const PUBLIC_ROOT = __dirname;
 const PUBLIC_BASE_PATH = normalizePublicBasePath(process.env.PUBLIC_BASE_PATH || "/StockAnalysis");
+const BUILD_INFO = readBuildInfo();
 const IS_VERCEL = Boolean(process.env.VERCEL);
 const NEWS_TIMEOUT_MS = Number(process.env.NEWS_TIMEOUT_MS || (IS_VERCEL ? 3500 : 9000));
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || (IS_VERCEL ? 22000 : 45000));
@@ -45,6 +46,7 @@ const STOCK_CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 15_000);
 const STOCK_RATE_LIMIT_WINDOW_MS = Number(process.env.STOCK_RATE_LIMIT_WINDOW_MS || 60_000);
 const STOCK_RATE_LIMIT_MAX = Number(process.env.STOCK_RATE_LIMIT_MAX || 30);
 const BRIEF_CONTEXT_RATE_LIMIT_MAX = Number(process.env.BRIEF_CONTEXT_RATE_LIMIT_MAX || 6);
+const LLM_RATE_LIMIT_MAX = Number(process.env.LLM_RATE_LIMIT_MAX || 20);
 const ALLOW_PRIVATE_LLM_HOSTS = /^(1|true|yes)$/i.test(process.env.ALLOW_PRIVATE_LLM_HOSTS || "");
 const OFFICIAL_LLM_HOSTS = {
   deepseek: new Set(["api.deepseek.com"]),
@@ -54,6 +56,7 @@ const stockCache = new Map();
 const stockInFlight = new Map();
 const stockRateLimits = new Map();
 const briefContextRateLimits = new Map();
+const llmRateLimits = new Map();
 
 class HttpError extends Error {
   constructor(statusCode, message, code = "") {
@@ -71,6 +74,24 @@ function createAgentServer() {
 function normalizePublicBasePath(basePath) {
   const normalized = String(basePath || "").trim().replace(/^\/+|\/+$/g, "");
   return normalized ? `/${normalized}` : "";
+}
+
+// 发布信息由部署脚本写进构建目录根的 build-info.json，用来确认线上跑的是哪个 commit。
+// 文件不存在时（本地运行、Vercel）返回空字段，健康接口本身照常可用。
+function readBuildInfo() {
+  try {
+    const raw = require("node:fs").readFileSync(path.join(PUBLIC_ROOT, "build-info.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    const pick = (value) => (typeof value === "string" ? value : "");
+    return {
+      commit: pick(parsed.commit).slice(0, 64),
+      shortCommit: pick(parsed.shortCommit).slice(0, 40),
+      release: pick(parsed.release).slice(0, 80),
+      deployedAt: pick(parsed.deployedAt).slice(0, 40)
+    };
+  } catch {
+    return { commit: "", shortCommit: "", release: "", deployedAt: "" };
+  }
 }
 
 function normalizeRequestPath(url) {
@@ -103,6 +124,12 @@ async function handleAgentRequest(request, response) {
           ok: true,
           browserConfigSupported: true,
           serverConfigured: Boolean(API_KEY),
+          build: {
+            commit: BUILD_INFO.commit,
+            shortCommit: BUILD_INFO.shortCommit,
+            release: BUILD_INFO.release,
+            deployedAt: BUILD_INFO.deployedAt
+          },
           defaults: {
             provider: PROVIDER,
             providerName: runtime.displayName,
@@ -134,6 +161,7 @@ async function handleAgentRequest(request, response) {
       }
 
       if (request.method === "POST" && url.pathname === "/api/llm") {
+        enforceLlmRateLimit(request);
         const body = await readJson(request);
         const { task, payload } = body;
         if (!isSupportedTask(task)) {
@@ -146,7 +174,7 @@ async function handleAgentRequest(request, response) {
 
         const enrichedPayload = await enrichLlmPayload(task, payload);
         const messages = buildMessages(task, enrichedPayload);
-        const completion = await callChatCompletions(messages, llmConfig);
+        const completion = await callChatCompletions(messages, llmConfig, task);
         sendJson(response, 200, {
           text: completion.text,
           provider: llmConfig.displayName,
@@ -197,11 +225,13 @@ module.exports = {
     buildMessages,
     parseEastMoneyKlines,
     parseTencentKlines,
-    parseNeteaseHistoryCsv,
     historyBaselineBeforeQuote,
     isRelevantNewsItem,
     mergeQuote,
     mergeFinance,
+    normalizeUnlockRow,
+    quoteTimeValue,
+    handsToShares,
     normalizeStockCode,
     normalizeBaseUrl,
     validateLlmBaseUrl,
@@ -380,11 +410,11 @@ async function buildDailyBriefContext(inputStocks) {
         code: fresh.code,
         name: fresh.name,
         status: "ok",
-        fetchedAt: fresh.fetchedAt,
+        fetchedAt: fresh.dataSource?.fetchedAt || "",
         market: {
-          price: fresh.price,
+          price: fresh.close,
           changePct: fresh.changePct,
-          volumeRatio: fresh.volumeRatio,
+          volumeRatio: firstNumber(volumeRatioOf(fresh), fresh.quoteVolumeRatio, null),
           tradeTime: fresh.tradeTime,
           ma5: fresh.ma5,
           ma10: fresh.ma10,
@@ -483,20 +513,23 @@ async function resolveLlmConfig(input = {}) {
   };
 }
 
-async function callChatCompletions(messages, config) {
+async function callChatCompletions(messages, config, task = "") {
   const endpoint = new URL(`${config.baseUrl}/chat/completions`);
+  const body = {
+    model: config.model,
+    messages,
+    temperature: 0.3,
+    max_tokens: config.maxTokens
+  };
+  // 连接测试只需要确认能否连通；DeepSeek 思考模式默认开启，会把 max_tokens 花在思维链上。
+  if (task === "config-test" && config.provider === "deepseek") body.thinking = { type: "disabled" };
   const data = await fetchJsonWithPolicy(endpoint, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${config.apiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature: 0.3,
-      max_tokens: config.maxTokens
-    })
+    body: JSON.stringify(body)
   }, {
     timeoutMs: LLM_TIMEOUT_MS,
     maxBytes: LLM_RESPONSE_MAX_BYTES,
@@ -636,7 +669,8 @@ async function fetchBufferWithPolicy(url, options = {}, policy = {}, parentSigna
         try {
           detail = parseJsonText(text).error?.message || "";
         } catch {
-          detail = text.trim().slice(0, 300);
+          // 上游返回的错误页多为 HTML，直接截取会把整段标签显示到“数据来源”面板里。
+          detail = stripHtml(text).replace(/\s+/g, " ").trim().slice(0, 160);
         }
         throw new HttpError(502, detail || `${policy.failureMessage || "上游接口"}：HTTP ${response.status}`, "UPSTREAM_FAILURE");
       }
@@ -699,6 +733,10 @@ function enforceBriefContextRateLimit(request) {
   enforceRateLimit(request, briefContextRateLimits, BRIEF_CONTEXT_RATE_LIMIT_MAX);
 }
 
+function enforceLlmRateLimit(request) {
+  enforceRateLimit(request, llmRateLimits, LLM_RATE_LIMIT_MAX);
+}
+
 function stockRequestKey({ code, style, stopLoss, nameOverride }) {
   return JSON.stringify([code, style || "短线观察", Number.isFinite(stopLoss) ? stopLoss : 0, String(nameOverride || "").trim()]);
 }
@@ -752,7 +790,7 @@ async function fetchRealStockData({ code, style, stopLoss, nameOverride }) {
   const historySource = historyResult.source;
   const historySourceUrl = historyResult.sourceUrl || "";
   const historyError = Array.isArray(historyResult.errors) ? historyResult.errors.join("；") : "";
-  const eventSignals = buildEventSignals(disclosureEvents, finance);
+  const eventSignals = buildEventSignals(disclosureEvents, { ...finance, sector: quote.sector || finance.sector || "" });
   const hasFinance = hasAnyFinanceField(finance);
   const baselineHistory = historyBaselineBeforeQuote(history, quote.tradeTime);
   const recent = baselineHistory.slice(-20);
@@ -809,6 +847,7 @@ async function fetchRealStockData({ code, style, stopLoss, nameOverride }) {
     changeAmount,
     changePct,
     amplitude,
+    tradeTime: quote.tradeTime || "",
     volume,
     amount,
     turnoverRate,
@@ -904,23 +943,8 @@ function toEastMoneyFullCode(code) {
   return `${code.startsWith("6") || code.startsWith("9") ? "SH" : "SZ"}${code}`;
 }
 
-function toEastMoneyNoticeCode(code) {
-  return `${code}.${code.startsWith("6") || code.startsWith("9") ? "SH" : "SZ"}`;
-}
-
 function toTencentSymbol(code) {
   return `${code.startsWith("6") || code.startsWith("9") ? "sh" : "sz"}${code}`;
-}
-
-function toNeteaseSymbol(code) {
-  return `${code.startsWith("6") || code.startsWith("9") ? "0" : "1"}${code}`;
-}
-
-function toCompactDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
 }
 
 function historyBaselineBeforeQuote(history, tradeTime) {
@@ -935,7 +959,6 @@ async function fetchQuoteWithFallback(code, secid) {
   const attempts = [
     { name: "东方财富", fetcher: (signal) => fetchEastMoneyQuote(secid, signal) },
     { name: "腾讯", fetcher: (signal) => fetchTencentQuote(code, signal) },
-    { name: "网易", fetcher: (signal) => fetchNeteaseQuote(code, signal) },
     { name: "新浪", fetcher: (signal) => fetchSinaQuote(code, signal) }
   ];
   const errors = [];
@@ -985,7 +1008,7 @@ async function fetchTencentQuote(code, signal) {
     close: toFiniteNumber(cells[3]),
     prevClose: toFiniteNumber(cells[4]),
     open: toFiniteNumber(cells[5]),
-    volume: isFiniteNumber(volumeHands) ? volumeHands * 100 : null,
+    volume: handsToShares(volumeHands),
     high: toFiniteNumber(cells[33]),
     low: toFiniteNumber(cells[34]),
     amount: isFiniteNumber(amountWan) ? amountWan * 10000 : null,
@@ -998,36 +1021,6 @@ async function fetchTencentQuote(code, signal) {
     floatMarketCap: isFiniteNumber(floatMarketCapYi) ? floatMarketCapYi * 100000000 : null,
     tradeTime: cells[30] || "",
     source: "腾讯证券实时行情",
-    sourceUrl: url
-  };
-}
-
-async function fetchNeteaseQuote(code, signal) {
-  const symbol = toNeteaseSymbol(code);
-  const url = `https://api.money.126.net/data/feed/${symbol},money.api?callback=_ntes_quote_callback`;
-  const text = await fetchTextRemote(url, {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://quotes.money.163.com/"
-  }, "utf-8", signal);
-  const data = parseJsonText(text);
-  const item = data[symbol];
-  if (!item) throw new Error("没有查询到该股票的网易行情。");
-  const percent = toFiniteNumber(item.percent);
-
-  return {
-    code,
-    name: item.name,
-    close: toFiniteNumber(item.price),
-    prevClose: toFiniteNumber(item.yestclose),
-    open: toFiniteNumber(item.open),
-    high: toFiniteNumber(item.high),
-    low: toFiniteNumber(item.low),
-    volume: toFiniteNumber(item.volume),
-    turnoverRate: toFiniteNumber(item.turnover),
-    changeAmount: toFiniteNumber(item.updown),
-    changePct: isFiniteNumber(percent) ? percent * 100 : null,
-    tradeTime: item.time || "",
-    source: "网易财经实时行情",
     sourceUrl: url
   };
 }
@@ -1058,8 +1051,7 @@ async function fetchEastMoneyQuote(secid, signal) {
     "f170",
     "f171",
     "f168",
-    "f177",
-    "f198"
+    "f86"
   ].join(",");
   const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${encodeURIComponent(secid)}&fields=${fields}`;
   const data = await fetchJsonRemote(url, {}, signal);
@@ -1073,7 +1065,7 @@ async function fetchEastMoneyQuote(secid, signal) {
     high: eastMoneyNumber(item.f44, 100),
     low: eastMoneyNumber(item.f45, 100),
     open: eastMoneyNumber(item.f46, 100),
-    volume: eastMoneyNumber(item.f47, 1),
+    volume: handsToShares(eastMoneyNumber(item.f47, 1)),
     amount: eastMoneyNumber(item.f48, 1),
     volumeRatio: eastMoneyNumber(item.f50, 100),
     prevClose: eastMoneyNumber(item.f60, 100),
@@ -1089,7 +1081,7 @@ async function fetchEastMoneyQuote(secid, signal) {
     marketCap: eastMoneyNumber(item.f116, 1),
     floatMarketCap: eastMoneyNumber(item.f117, 1),
     sector: item.f100 || item.f127 || item.f128 || "待补充",
-    tradeTime: item.f177 || item.f198 || "",
+    tradeTime: formatEastMoneyTradeTime(item.f86),
     source: "东方财富实时行情",
     sourceUrl: url
   };
@@ -1098,8 +1090,7 @@ async function fetchEastMoneyQuote(secid, signal) {
 async function fetchHistoryWithFallback(code, secid) {
   const attempts = [
     { name: "东方财富", fetcher: (signal) => fetchEastMoneyHistory(secid, signal) },
-    { name: "腾讯", fetcher: (signal) => fetchTencentHistory(code, signal) },
-    { name: "网易", fetcher: (signal) => fetchNeteaseHistory(code, signal) }
+    { name: "腾讯", fetcher: (signal) => fetchTencentHistory(code, signal) }
   ];
   const errors = [];
   const results = await Promise.all(
@@ -1116,12 +1107,29 @@ async function fetchHistoryWithFallback(code, secid) {
   for (const result of results) {
     if (!result) continue;
     const items = Array.isArray(result.items) ? result.items : [];
-    if (items.length > best.items.length) best = { ...result, items };
+    if (isBetterHistoryResult(items, best.items)) best = { ...result, items };
     if (items.length < 60) errors.push(`${result.source}历史K线仅${items.length}条`);
   }
 
   if (best.items.length) return { ...best, errors };
   throw new Error(errors.join("；") || "历史K线为空");
+}
+
+/**
+ * 腾讯K线不带成交额与换手率，只按条数挑来源会让“20日均额/均换手”永远为空。
+ * 因此优先选择同时带成交额和换手率的结果（且至少 60 条），其次才比较条数。
+ */
+function historyRichness(items) {
+  const hasAmount = items.some((item) => isFiniteNumber(item.amount));
+  const hasTurnover = items.some((item) => isFiniteNumber(item.turnoverRate));
+  return (hasAmount ? 1 : 0) + (hasTurnover ? 1 : 0);
+}
+
+function isBetterHistoryResult(candidateItems, bestItems) {
+  const candidateRich = candidateItems.length >= 60 ? historyRichness(candidateItems) : -1;
+  const bestRich = bestItems.length >= 60 ? historyRichness(bestItems) : -1;
+  if (candidateRich !== bestRich) return candidateRich > bestRich;
+  return candidateItems.length > bestItems.length;
 }
 
 async function fetchEastMoneyHistory(secid, signal) {
@@ -1135,7 +1143,8 @@ async function fetchEastMoneyHistory(secid, signal) {
 
   for (const attempt of attempts) {
     try {
-      const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}&klt=101&fqt=${attempt.fqt}&lmt=120&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
+      // 东方财富K线接口仅带 lmt 时会返回 rc:102 与空数据，必须同时给出 end 参数。
+      const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}&klt=101&fqt=${attempt.fqt}&lmt=120&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
       const data = await fetchJsonRemote(url, {}, signal);
       const items = parseEastMoneyKlines(data.data?.klines || []);
       if (items.length > best.items.length) best = { items, source: attempt.label, sourceUrl: url };
@@ -1160,7 +1169,7 @@ function parseEastMoneyKlines(klines) {
         close: toFiniteNumber(close),
         high: toFiniteNumber(high),
         low: toFiniteNumber(low),
-        volume: toFiniteNumber(volume),
+        volume: handsToShares(toFiniteNumber(volume)),
         amount: toFiniteNumber(amount),
         amplitude: toFiniteNumber(amplitude),
         changePct: toFiniteNumber(changePct),
@@ -1193,7 +1202,7 @@ function parseTencentKlines(rows) {
         close: toFiniteNumber(close),
         high: toFiniteNumber(high),
         low: toFiniteNumber(low),
-        volume: toFiniteNumber(volume),
+        volume: handsToShares(toFiniteNumber(volume)),
         amount: toFiniteNumber(amount),
         amplitude: null,
         changePct: null,
@@ -1204,48 +1213,6 @@ function parseTencentKlines(rows) {
     .filter((item) => [item.open, item.close, item.high, item.low, item.volume].every(isFiniteNumber));
 }
 
-async function fetchNeteaseHistory(code, signal) {
-  const symbol = toNeteaseSymbol(code);
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - 220);
-  const url = `https://quotes.money.163.com/service/chddata.html?code=${symbol}&start=${toCompactDate(start)}&end=${toCompactDate(end)}&fields=TCLOSE;HIGH;LOW;TOPEN;LCLOSE;CHG;PCHG;VOTURNOVER;VATURNOVER;TURNOVER`;
-  const text = await fetchTextRemote(url, {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://quotes.money.163.com/"
-  }, "gb18030", signal);
-  const items = parseNeteaseHistoryCsv(text);
-  if (!items.length) throw new Error("网易历史K线为空。");
-  return { items, source: "网易财经历史K线", sourceUrl: url };
-}
-
-function parseNeteaseHistoryCsv(text) {
-  const lines = String(text || "").trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = splitCsvSimple(lines[0]);
-  const rows = lines.slice(1).map((line) => Object.fromEntries(splitCsvSimple(line).map((value, index) => [headers[index], value])));
-  return rows
-    .map((row) => ({
-      date: row["日期"] || row.date || "",
-      open: toFiniteNumber(row["开盘价"]),
-      close: toFiniteNumber(row["收盘价"]),
-      high: toFiniteNumber(row["最高价"]),
-      low: toFiniteNumber(row["最低价"]),
-      volume: toFiniteNumber(row["成交量"]),
-      amount: toFiniteNumber(row["成交金额"]),
-      changeAmount: toFiniteNumber(row["涨跌额"]),
-      changePct: toFiniteNumber(row["涨跌幅"]),
-      turnoverRate: toFiniteNumber(row["换手率"]),
-      amplitude: null
-    }))
-    .filter((item) => [item.open, item.close, item.high, item.low, item.volume].every(isFiniteNumber))
-    .sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function splitCsvSimple(line) {
-  return String(line).split(",").map((item) => item.trim().replace(/^"|"$/g, ""));
-}
-
 async function fetchLatestStockNewsWithFallback({ code, name }, signal) {
   const errors = [];
   const sourceUrls = [];
@@ -1254,10 +1221,6 @@ async function fetchLatestStockNewsWithFallback({ code, name }, signal) {
   const normalizedCode = normalizeStockCode(code);
 
   const attempts = [
-    {
-      name: "东方财富个股资讯",
-      fetcher: () => fetchEastMoneyStockNews(normalizedCode, name, signal)
-    },
     {
       name: "东方财富资讯搜索",
       fetcher: () => fetchEastMoneySearchNews(normalizedCode, name, signal)
@@ -1315,16 +1278,6 @@ async function fetchLatestStockNewsWithFallback({ code, name }, signal) {
     sourceUrls: [...new Set(sourceUrls.filter(Boolean))],
     errors
   };
-}
-
-async function fetchEastMoneyStockNews(code, name, signal) {
-  const marketCode = toEastMoneyNoticeCode(code);
-  const url = `https://np-listapi.eastmoney.com/comm/web/getNewsByColumns?client=web&biz=web_stock&column=stock&order=1&page_size=20&page_index=1&stock=${encodeURIComponent(marketCode)}`;
-  const data = await fetchJsonRemote(url, { Referer: `https://quote.eastmoney.com/${toEastMoneyFullCode(code).toLowerCase()}.html` }, signal);
-  const items = extractNewsRows(data)
-    .map((row) => ({ ...normalizeNewsRow(row, { source: "东方财富个股资讯", code, name }), relevanceTrusted: true }))
-    .filter((item) => item.title);
-  return { items, source: "东方财富个股资讯", sourceUrl: url };
 }
 
 async function fetchEastMoneySearchNews(code, name, signal) {
@@ -1430,7 +1383,8 @@ async function fetchDisclosureEventsWithFallback(code, signal) {
 }
 
 async function fetchEastMoneyAnnouncements(code, signal) {
-  const url = `https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=50&page_index=1&ann_type=A&client_source=web&stock_list=${encodeURIComponent(toEastMoneyNoticeCode(code))}&f_node=0&s_node=0`; 
+  // 公告接口的 stock_list 只接受 6 位代码；写成 "600519.SH" 会返回 total_hits: 0。
+  const url = `https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=50&page_index=1&ann_type=A&client_source=web&stock_list=${encodeURIComponent(code)}&f_node=0&s_node=0`;
   const data = await fetchJsonRemote(url, { Referer: "https://data.eastmoney.com/notices/" }, signal);
   const items = extractAnnouncementRows(data)
     .map((row) => normalizeAnnouncementRow(row, code))
@@ -1441,7 +1395,8 @@ async function fetchEastMoneyAnnouncements(code, signal) {
 
 async function fetchEastMoneyUnlocks(code, signal) {
   const filter = encodeURIComponent(`(SECURITY_CODE="${code}")`);
-  const url = `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STAGE&columns=ALL&filter=${filter}&pageNumber=1&pageSize=10&sortColumns=LIFT_DATE&sortTypes=1`; 
+  // RPT_LIFT_STAGE 没有 LIFT_DATE 列，排序字段必须用 FREE_DATE；否则接口返回“排序字段不存在”而拿不到任何解禁数据。
+  const url = `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LIFT_STAGE&columns=ALL&filter=${filter}&pageNumber=1&pageSize=10&sortColumns=FREE_DATE&sortTypes=1`;
   const data = await fetchJsonRemote(url, { Referer: "https://data.eastmoney.com/dxf/" }, signal);
   const items = extractRows(data)
     .map(normalizeUnlockRow)
@@ -1535,14 +1490,23 @@ function classifyUnlockEvents(unlocks) {
   }).filter(Boolean);
 }
 
+// 只有同比明显下滑才算“承压”，避免 -0.2% 这类噪声触发提醒。
+const FINANCE_DECLINE_EVENT_THRESHOLD = -5;
+// 金融业靠杠杆经营，资产负债率与其他行业不可比，跳过负债率判断。
+const FINANCIAL_SECTOR_PATTERN = /银行|保险|证券|金融/;
+
 function classifyFinanceEvents(finance = {}) {
   const notes = [];
-  if (isFiniteNumber(finance.profitYoY) && finance.profitYoY < 0) notes.push(`净利同比 ${finance.profitYoY.toFixed(2)}%`);
-  if (isFiniteNumber(finance.revenueYoY) && finance.revenueYoY < 0) notes.push(`营收同比 ${finance.revenueYoY.toFixed(2)}%`);
+  const financialSector = FINANCIAL_SECTOR_PATTERN.test(String(finance.sector || ""));
+  const profitDecline = isFiniteNumber(finance.profitYoY) && finance.profitYoY <= FINANCE_DECLINE_EVENT_THRESHOLD;
+  const revenueDecline = isFiniteNumber(finance.revenueYoY) && finance.revenueYoY <= FINANCE_DECLINE_EVENT_THRESHOLD;
+  const debtRisk = !financialSector && isFiniteNumber(finance.debtRatio) && finance.debtRatio >= 75;
+  if (profitDecline) notes.push(`净利同比 ${finance.profitYoY.toFixed(2)}%`);
+  if (revenueDecline) notes.push(`营收同比 ${finance.revenueYoY.toFixed(2)}%`);
   if (isFiniteNumber(finance.netProfit) && finance.netProfit < 0) notes.push("净利润为负");
-  if (isFiniteNumber(finance.debtRatio) && finance.debtRatio >= 75) notes.push(`负债率 ${finance.debtRatio.toFixed(2)}%`);
+  if (debtRisk) notes.push(`负债率 ${finance.debtRatio.toFixed(2)}%`);
   if (!notes.length) return [];
-  const high = (isFiniteNumber(finance.profitYoY) && finance.profitYoY <= -30) || (isFiniteNumber(finance.netProfit) && finance.netProfit < 0) || (isFiniteNumber(finance.debtRatio) && finance.debtRatio >= 85);
+  const high = (profitDecline && finance.profitYoY <= -30) || (isFiniteNumber(finance.netProfit) && finance.netProfit < 0) || (!financialSector && isFiniteNumber(finance.debtRatio) && finance.debtRatio >= 85);
   return [{
     type: "财报异常",
     title: "财务指标承压",
@@ -1572,9 +1536,11 @@ function normalizeUnlockRow(row) {
   return {
     title: pickString(row, ["SECURITY_NAME_ABBR", "SECURITY_NAME", "股票简称"]),
     date: normalizeEventDate(pickString(row, ["LIFT_DATE", "FREE_DATE", "UNLOCK_DATE", "LISTING_DATE", "解禁日期", "上市流通日期"])), 
-    ratio: pickNumber(row, ["FREE_SHARES_RATIO", "LIFT_RATIO", "UNLOCK_RATIO", "LIFT_SHARES_RATIO", "RATIO", "解禁比例"]),
-    shares: pickNumber(row, ["FREE_SHARES", "LIFT_NUM", "LIFT_SHARES", "UNLOCK_SHARES", "解禁数量"]),
-    marketCap: pickNumber(row, ["FREE_MARKET_CAP", "LIFT_MARKET_CAP", "UNLOCK_MARKET_CAP", "MARKET_CAP", "解禁市值"]),
+    // RPT_LIFT_STAGE 的 FREE_RATIO 是小数（0.3197 = 31.97%），换算成百分比。
+    ratio: ratioToPercent(pickNumber(row, ["FREE_SHARES_RATIO", "LIFT_RATIO", "UNLOCK_RATIO", "LIFT_SHARES_RATIO", "FREE_RATIO", "解禁比例"])),
+    // 该报表的股数单位是“万股”，市值单位是“万元”，统一换算成股和元。
+    shares: wanToUnits(pickNumber(row, ["CURRENT_FREE_SHARES", "FREE_SHARES", "LIFT_NUM", "LIFT_SHARES", "UNLOCK_SHARES", "解禁数量"])),
+    marketCap: wanToUnits(pickNumber(row, ["FREE_MARKET_CAP", "LIFT_MARKET_CAP", "UNLOCK_MARKET_CAP", "MARKET_CAP", "解禁市值"])),
     source: "东方财富解禁日程",
     url: "https://data.eastmoney.com/dxf/"
   };
@@ -1671,6 +1637,16 @@ function formatDisclosureNumber(value) {
   return String(Number(value.toFixed(2)));
 }
 
+/** 解禁报表里的比例字段是小数，转换成百分比。 */
+function ratioToPercent(value) {
+  return isFiniteNumber(value) ? Number((value * 100).toFixed(4)) : null;
+}
+
+/** 解禁报表里的股数与市值单位是“万”，换算成股/元。 */
+function wanToUnits(value) {
+  return isFiniteNumber(value) ? Number((value * 10_000).toFixed(2)) : null;
+}
+
 async function fetchFinanceWithFallback(code) {
   const fullCode = toEastMoneyFullCode(code);
   const filter = encodeURIComponent(`(SECURITY_CODE="${code}")`);
@@ -1681,18 +1657,8 @@ async function fetchFinanceWithFallback(code) {
       referer: "https://emweb.securities.eastmoney.com/"
     },
     {
-      name: "东方财富F10财务分析",
-      url: `https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/MainTargetAjaxNew?type=1&code=${fullCode}`,
-      referer: "https://emweb.securities.eastmoney.com/"
-    },
-    {
       name: "东方财富数据中心财务摘要",
       url: `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_FINANCE_MAINFINADATA&columns=ALL&filter=${filter}&pageNumber=1&pageSize=8&sortColumns=REPORT_DATE&sortTypes=-1`,
-      referer: "https://data.eastmoney.com/"
-    },
-    {
-      name: "东方财富数据中心主要财务",
-      url: `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DMSK_FN_MAIN_DATA&columns=ALL&filter=${filter}&pageNumber=1&pageSize=8&sortColumns=REPORT_DATE&sortTypes=-1`,
       referer: "https://data.eastmoney.com/"
     }
   ];
@@ -1749,16 +1715,16 @@ function extractFinanceFromResponse(data, source) {
     sector: pickString(row, ["INDUSTRY_NAME", "INDUSTRY", "BK", "TRADE", "SECURITY_INDUSTRY_NAME", "BOARD_NAME"]),
     reportDate: normalizeReportDate(pickString(row, ["REPORT_DATE", "REPORTDATE", "REPORTDATE_NAME", "DATE", "END_DATE", "ENDDATE", "NOTICE_DATE"])), 
     roe: pickNumber(row, ["WEIGHTAVG_ROE", "WEIGHTED_ROE", "ROE_WEIGHT", "ROE_WEIGHT_AVG", "JQROE", "ROEJQ", "ROE", "NET_ROE", "DILUTED_ROE", "AVERAGE_ROE", "净资产收益率", "加权净资产收益率"]),
-    revenueYoY: pickNumber(row, ["TOTAL_OPERATE_INCOME_YOY", "TOTAL_OPERATE_REVENUE_YOY", "TOTAL_REVENUE_YOY", "OPERATE_INCOME_YOY", "OPERATING_INCOME_YOY", "REVENUE_YOY", "YSTZ", "营业总收入同比增长率", "营业收入同比增长率", "营业收入同比增长", "营收同比"]),
-    profitYoY: pickNumber(row, ["PARENT_NETPROFIT_YOY", "PARENT_NETPROFIT_RATIO", "NETPROFIT_YOY", "NET_PROFIT_YOY", "NETPROFITRATIO", "NP_YOY", "SJLTZ", "归属母公司股东的净利润同比增长率", "归母净利润同比增长率", "净利润同比增长率", "归母净利润同比增长", "净利同比"]),
+    revenueYoY: pickNumber(row, ["TOTAL_OPERATE_INCOME_YOY", "TOTAL_OPERATE_REVENUE_YOY", "TOTAL_REVENUE_YOY", "OPERATE_INCOME_YOY", "OPERATING_INCOME_YOY", "REVENUE_YOY", "YSTZ", "营业总收入同比增长率", "营业收入同比增长率", "营业收入同比增长", "营收同比", "OI_YOYRATIO_PK"]),
+    profitYoY: pickNumber(row, ["PARENT_NETPROFIT_YOY", "PARENT_NETPROFIT_RATIO", "NETPROFIT_YOY", "NET_PROFIT_YOY", "NETPROFITRATIO", "NP_YOY", "SJLTZ", "归属母公司股东的净利润同比增长率", "归母净利润同比增长率", "净利润同比增长率", "归母净利润同比增长", "净利同比", "PARENTNETPROFITTZ"]),
     debtRatio: pickNumber(row, ["DEBT_ASSET_RATIO", "ASSET_LIABILITY_RATIO", "LIABILITY_ASSET_RATIO", "DEBT_TO_ASSET_RATIO", "ZCFZL", "资产负债率"]),
     grossMargin: pickNumber(row, ["GROSS_PROFIT_RATIO", "SALE_GROSS_PROFIT_RATIO", "GROSS_MARGIN", "XSMLL", "销售毛利率", "毛利率"]),
     netMargin: pickNumber(row, ["NETPROFIT_MARGIN", "NET_PROFIT_RATIO", "SALE_NETPROFIT_RATIO", "XSJLL", "销售净利率", "净利率"]),
     eps: pickNumber(row, ["BASIC_EPS", "EPS", "JBMG收益", "基本每股收益", "每股收益"]),
     bps: pickNumber(row, ["BPS", "BVPS", "NET_ASSET_PS", "MGJZC", "每股净资产"]),
     cashFlowPerShare: pickNumber(row, ["MGJYXJJE", "OCFPS", "CASHFLOWPS", "每股经营现金流", "每股现金流量净额"]),
-    revenue: pickNumberStrict(row, ["TOTAL_OPERATE_INCOME", "TOTAL_OPERATE_REVENUE", "OPERATE_INCOME", "OPERATING_INCOME", "营业总收入", "营业收入"]),
-    netProfit: pickNumberStrict(row, ["PARENT_NETPROFIT", "PARENT_NET_PROFIT", "NETPROFIT", "NET_PROFIT", "归属母公司股东的净利润", "归母净利润", "净利润"]),
+    revenue: pickNumberStrict(row, ["TOTAL_OPERATE_INCOME", "TOTAL_OPERATE_REVENUE", "OPERATE_INCOME", "OPERATE_INCOME_PK", "OPERATING_INCOME", "营业总收入", "营业收入"]),
+    netProfit: pickNumberStrict(row, ["PARENT_NETPROFIT", "PARENTNETPROFIT", "PARENT_NET_PROFIT", "NETPROFIT", "NET_PROFIT", "归属母公司股东的净利润", "归母净利润", "净利润"]),
     pe: pickNumber(row, ["PE", "PE_TTM", "PETTM", "市盈率"]),
     pb: pickNumber(row, ["PB", "PBMRQ", "市净率"])
   };
@@ -1838,12 +1804,21 @@ function quoteTimeValue(value) {
   const normalized = text.replace(/\//g, "-");
   const parsed = Date.parse(normalized.includes("T") ? normalized : normalized.replace(" ", "T"));
   if (Number.isFinite(parsed)) return parsed;
-  const digits = text.replace(/\D/g, "");
-  return digits ? Number(digits.slice(0, 14).padEnd(14, "0")) : 0;
+  // 腾讯行情时间是 20261117161443 这类紧凑格式。直接按数字比较会得到远超时间戳的巨大值，
+  // 让腾讯永远被判定为“最新”；这里换算成同一量级的时间戳。
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/);
+  if (compact) {
+    const [, year, month, day, hour = "00", minute = "00", second = "00"] = compact;
+    const compactParsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}`);
+    if (Number.isFinite(compactParsed)) return compactParsed;
+  }
+  return 0;
 }
 
 function mergeQuote(base, extra) {
-  const sources = [...new Set([...(base.sources || []), base.source, extra.source].filter(Boolean))];
+  // base 若是合并结果，base.source 已经是拼接后的字符串，直接并入会造成来源重复。
+  const baseSources = base.sources || (base.source ? [base.source] : []);
+  const sources = [...new Set([...baseSources, extra.source].filter(Boolean))];
   const sourceUrls = [...new Set([...(base.sourceUrls || []), base.sourceUrl, extra.sourceUrl].filter(Boolean))];
   const extraIsNewer = quoteTimeValue(extra.tradeTime) > quoteTimeValue(base.tradeTime);
   const primary = extraIsNewer ? extra : base;
@@ -2024,6 +1999,28 @@ function eastMoneyNumber(value, scale) {
   return Number((number / scale).toFixed(4));
 }
 
+/**
+ * 成交量统一按“股”保存。
+ * 东方财富行情(f47)、东方财富K线(f56)、腾讯行情(cells[6])、腾讯K线的成交量单位都是“手”，
+ * 网易行情/网易CSV、新浪行情的单位已经是“股”。若不做统一，量比（volume / avgVolume20）
+ * 会因两个字段单位不同而相差 100 倍，产生错误的“放量”提醒。
+ */
+function handsToShares(value) {
+  return isFiniteNumber(value) ? value * 100 : null;
+}
+
+/**
+ * 东方财富 f177/f198 返回的不是时间（实测为 577、"BK1277"），行情时间来自 f86（Unix 秒）。
+ * 统一换算成北京时间字符串，避免把无效值写进 tradeTime 并传给模型上下文。
+ */
+function formatEastMoneyTradeTime(value) {
+  const seconds = toFiniteNumber(value);
+  if (!isFiniteNumber(seconds) || seconds <= 0) return "";
+  const date = new Date((seconds + 8 * 60 * 60) * 1000);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+}
+
 function toFiniteNumber(value) {
   if (value === undefined || value === null || value === "-" || value === "") return null;
   const number = Number(String(value).replace(/,/g, "").replace(/%/g, "").trim());
@@ -2053,6 +2050,12 @@ function priceChange(close, prevClose) {
 function priceChangePct(close, prevClose) {
   if (!isFiniteNumber(close) || !isFiniteNumber(prevClose) || prevClose === 0) return null;
   return Number((((close - prevClose) / prevClose) * 100).toFixed(4));
+}
+
+/** 本地量比：当日成交量 / 20日均量，与浏览器规则层口径一致。 */
+function volumeRatioOf(stock) {
+  if (!isFiniteNumber(stock?.volume) || !isFiniteNumber(stock?.avgVolume20) || stock.avgVolume20 === 0) return null;
+  return Number((stock.volume / stock.avgVolume20).toFixed(4));
 }
 
 function periodChange(values, days) {

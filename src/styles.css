@@ -1,28 +1,32 @@
+/* 浅色金融看板主题：颜色统一由 :root 变量控制，响应式断点为 1100/980/640/560/400 与 print。 */
 :root {
   color-scheme: light;
-  --bg: #f4f6f8;
+  --bg: #f6f8fb;
   --surface: #ffffff;
-  --surface-soft: #f8fafc;
-  --surface-strong: #eef3f7;
+  --surface-soft: #f9fbff;
+  --surface-strong: #f1f5fb;
   --text: #172033;
   --muted: #667085;
-  --subtle: #8994a3;
-  --line: #d7e0ea;
-  --line-strong: #bdcad8;
-  --accent: #126b72;
-  --accent-strong: #0e5960;
-  --accent-soft: #e6f4f4;
-  --green: #147a55;
-  --green-soft: #e7f5ee;
-  --red: #c23a32;
-  --red-soft: #fdecea;
-  --amber: #b36a16;
-  --amber-soft: #fff3d7;
-  --blue: #2868b2;
-  --blue-soft: #e9f2ff;
-  --shadow-sm: 0 8px 24px rgba(28, 45, 70, 0.06);
-  --shadow-md: 0 20px 50px rgba(28, 45, 70, 0.1);
-  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+  --subtle: #98a2b3;
+  --line: #e5eaf2;
+  --line-strong: #cdd6e3;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: #eef4ff;
+  --green: #079455;
+  --green-soft: #ecfdf3;
+  --red: #d92d20;
+  --red-soft: #fff1f0;
+  --amber: #f97316;
+  --amber-soft: #fff7ed;
+  --blue: #2563eb;
+  --blue-soft: #eef4ff;
+  --shadow-sm: 0 10px 28px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 16px 40px rgba(16, 24, 40, 0.08);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ink-soft: #475467;
+  --orange: #f97316;
+  --radius: 22px;
 }
 
 * {
@@ -32,7 +36,7 @@
 body {
   margin: 0;
   min-width: 320px;
-  background: var(--bg);
+
   color: var(--text);
 }
 
@@ -49,23 +53,18 @@ button {
 
 .app-shell {
   min-height: 100vh;
-  padding: 22px;
+
 }
 
 .topbar {
-  align-items: center;
-  background: linear-gradient(135deg, #102538 0%, #123c49 58%, #0b696c 100%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 18px;
-  box-shadow: var(--shadow-md);
-  color: #fff;
+
   display: flex;
   gap: 28px;
   justify-content: space-between;
   margin: 0 auto 18px;
   max-width: 1480px;
   overflow: hidden;
-  padding: 24px 26px;
+
   position: relative;
 }
 
@@ -101,7 +100,7 @@ button {
 }
 
 .eyebrow {
-  color: var(--accent);
+
   font-size: 13px;
   font-weight: 800;
   margin: 0;
@@ -119,26 +118,10 @@ button {
   padding: 0 10px;
 }
 
-.mode-pill {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.2);
-  color: #e8ffff;
-}
-
 .mode-pill.neutral,
 .data-badge {
   background: var(--surface);
   color: var(--muted);
-}
-
-.mode-pill.ready {
-  background: var(--green-soft);
-  color: var(--green);
-}
-
-.mode-pill.warning {
-  background: var(--amber-soft);
-  color: var(--amber);
 }
 
 h1,
@@ -148,12 +131,6 @@ p {
   margin-top: 0;
 }
 
-h1 {
-  font-size: clamp(30px, 3vw, 44px);
-  line-height: 1.08;
-  margin: 8px 0 8px;
-}
-
 h2 {
   font-size: 18px;
   line-height: 1.25;
@@ -161,9 +138,7 @@ h2 {
 }
 
 .subtitle {
-  color: var(--muted);
-  font-size: 15px;
-  line-height: 1.5;
+
   margin: 0;
   max-width: 720px;
 }
@@ -199,7 +174,7 @@ h2 {
 .text-button,
 .segment {
   border: 1px solid transparent;
-  border-radius: 8px;
+
   font-weight: 800;
   min-height: 38px;
   white-space: nowrap;
@@ -235,14 +210,13 @@ h2 {
 
 .text-button {
   background: transparent;
-  color: var(--accent);
+
   padding: 0 8px;
 }
 
 .dashboard-grid {
   display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+
   margin: 0 auto;
   max-width: 1480px;
 }
@@ -254,26 +228,25 @@ h2 {
 .stock-picker,
 .analysis-card,
 .metric-card {
-  background: var(--surface);
+
   border: 1px solid var(--line);
   border-radius: 8px;
 }
 
 .control-panel {
   align-self: start;
-  box-shadow: var(--shadow-md);
+
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
+
   position: sticky;
-  top: 16px;
+
 }
 
 .segmented {
-  background: var(--surface-strong);
+
   border: 1px solid var(--line);
-  border-radius: 11px;
+
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   padding: 4px;
@@ -281,24 +254,13 @@ h2 {
 
 .segment {
   background: transparent;
-  color: var(--muted);
+
   min-height: 34px;
   padding: 0 8px;
 }
 
-.segment.is-active {
-  background: var(--surface);
-  border-color: var(--line);
-  box-shadow: var(--shadow-sm);
-  color: var(--text);
-}
-
 .engine-status {
-  background: linear-gradient(145deg, #142536, #101a27);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.04);
-  color: #f5f8fb;
+
   display: grid;
   gap: 1px;
   overflow: hidden;
@@ -306,7 +268,7 @@ h2 {
 
 .engine-status div {
   align-items: center;
-  background: rgba(255, 255, 255, 0.06);
+
   display: flex;
   justify-content: space-between;
   min-height: 40px;
@@ -314,7 +276,7 @@ h2 {
 }
 
 .engine-status span {
-  color: #aeb8c5;
+
   font-size: 12px;
   font-weight: 800;
 }
@@ -333,7 +295,7 @@ h2 {
 }
 
 .field input[type="range"] {
-  accent-color: var(--accent);
+
   grid-column: 1 / -1;
   width: 100%;
 }
@@ -371,10 +333,10 @@ select {
 }
 
 .notice {
-  background: linear-gradient(135deg, #fff9eb, #fffdf7);
+
   border: 1px solid #f0d59d;
   border-left: 4px solid var(--amber);
-  border-radius: 11px;
+
   padding: 13px 14px;
 }
 
@@ -395,58 +357,38 @@ select {
 .workspace {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+
   min-width: 0;
 }
 
 .metric-strip {
   display: grid;
-  gap: 10px;
+
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .metric-card {
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-  padding: 14px 15px;
+
   position: relative;
 }
 
 .metric-card::before {
   background: var(--accent);
-  content: "";
+
   display: block;
-  height: 4px;
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: 0;
-}
 
-.metric-card.warn-card::before {
-  background: var(--amber);
-}
-
-.metric-card.good-card::before {
-  background: var(--green);
-}
-
-.metric-card.risk-card::before {
-  background: var(--red);
 }
 
 .metric-card span {
-  color: var(--muted);
+
   display: block;
-  font-size: 13px;
+
   font-weight: 800;
-  margin-bottom: 8px;
+
 }
 
 .metric-card strong {
-  font-size: 32px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.04em;
+
   line-height: 1;
 }
 
@@ -466,27 +408,21 @@ select {
   box-shadow: var(--shadow-sm);
 }
 
-.board-panel {
-  margin-bottom: 14px;
-  padding: 15px;
-}
-
 .alert-list {
   display: grid;
-  gap: 8px;
-  margin-top: 12px;
+
 }
 
 .alert-item {
   align-items: start;
-  background: var(--surface-soft);
+
   border: 1px solid var(--line);
   border-left: 5px solid var(--blue);
-  border-radius: 8px;
+
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
-  padding: 11px 12px;
+
 }
 
 .alert-item.high {
@@ -548,27 +484,13 @@ select {
   color: var(--blue);
 }
 
-.status-pill.strong {
-  background: var(--green-soft);
-  color: var(--green);
-}
-
 .status-pill.neutral {
   background: #eef2f6;
   color: #475467;
 }
 
-.status-pill.weak {
-  background: var(--red-soft);
-  color: var(--red);
-}
-
 .table-shell {
   overflow: hidden;
-}
-
-.table-header {
-  padding: 13px 15px;
 }
 
 .table-title-group {
@@ -659,8 +581,7 @@ select {
 
 .edit-dialog {
   border: 0;
-  border-radius: 14px;
-  box-shadow: 0 28px 80px rgba(18, 31, 48, 0.24);
+
   max-width: min(820px, calc(100vw - 28px));
   padding: 0;
   width: 820px;
@@ -668,12 +589,12 @@ select {
 
 .edit-dialog::backdrop {
   backdrop-filter: blur(4px);
-  background: rgba(12, 24, 38, 0.5);
+
 }
 
 .edit-form {
   background: var(--surface);
-  padding: 16px;
+
 }
 
 .edit-header {
@@ -725,9 +646,9 @@ select {
 }
 
 .help-quick-start {
-  background: linear-gradient(135deg, var(--blue-soft), rgba(255, 255, 255, 0.86));
+
   border: 1px solid rgba(31, 111, 235, 0.16);
-  border-radius: 12px;
+
   padding: 14px;
 }
 
@@ -785,7 +706,7 @@ select {
 }
 
 .help-card {
-  background: var(--surface-soft);
+
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 14px;
@@ -805,10 +726,10 @@ select {
 }
 
 .help-warning {
-  background: var(--amber-soft);
+
   border: 1px solid rgba(202, 138, 4, 0.2);
   border-radius: 10px;
-  color: var(--ink-soft);
+
   font-size: 13px;
   line-height: 1.65;
   margin-top: 12px;
@@ -922,10 +843,10 @@ select {
 }
 
 .model-privacy-note {
-  background: var(--blue-soft);
+
   border: 1px solid rgba(31, 111, 235, 0.16);
   border-radius: 10px;
-  color: var(--ink-soft);
+
   font-size: 13px;
   line-height: 1.6;
   margin: 14px 0 0;
@@ -945,22 +866,19 @@ select {
 
 table {
   border-collapse: collapse;
-  min-width: 940px;
+
   width: 100%;
 }
 
 th,
 td {
-  border-top: 1px solid var(--line);
-  padding: 10px 13px;
+
   text-align: left;
   vertical-align: middle;
 }
 
 th {
-  background: var(--surface-strong);
-  color: var(--muted);
-  font-size: 12px;
+
   font-weight: 900;
 }
 
@@ -982,7 +900,6 @@ th {
   width: 17px;
 }
 
-
 .help-tip:hover,
 .help-tip:focus {
   background: var(--accent-soft);
@@ -990,8 +907,7 @@ th {
 }
 
 .global-tooltip {
-  background: #101722;
-  border-radius: 8px;
+
   box-shadow: var(--shadow-md);
   color: #f5f8fb;
   font-size: 12px;
@@ -1016,14 +932,6 @@ th {
   transform: translateY(0);
 }
 
-td {
-  font-size: 14px;
-}
-
-tbody tr:hover {
-  background: #fbfcfd;
-}
-
 .row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1034,17 +942,12 @@ tbody tr:hover {
 .mini-button {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+
   color: var(--text);
   font-size: 12px;
   font-weight: 800;
   min-height: 30px;
   padding: 0 9px;
-}
-
-.mini-button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .mini-button.danger {
@@ -1058,7 +961,7 @@ tbody tr:hover {
 .stock-link {
   background: transparent;
   border: 0;
-  color: var(--accent);
+
   font-weight: 900;
   padding: 0;
   text-align: left;
@@ -1073,12 +976,12 @@ tbody tr:hover {
 }
 
 .up {
-  color: var(--red);
+
   font-weight: 900;
 }
 
 .down {
-  color: var(--green);
+
   font-weight: 900;
 }
 
@@ -1088,8 +991,7 @@ tbody tr:hover {
 }
 
 .report-box {
-  background: #101722;
-  border-radius: 8px;
+
   color: #edf3f8;
   font-family: Consolas, "Microsoft YaHei", monospace;
   font-size: 14px;
@@ -1102,11 +1004,11 @@ tbody tr:hover {
 }
 
 .llm-panel {
-  background: linear-gradient(135deg, #fbfdfd, #f6fafb);
+
   border: 1px solid var(--line);
-  border-radius: 12px;
+
   margin-top: 12px;
-  padding: 14px;
+
 }
 
 .llm-panel-header {
@@ -1184,16 +1086,16 @@ tbody tr:hover {
 }
 
 .markdown-output blockquote {
-  background: var(--surface);
+
   border-left: 4px solid var(--accent);
-  border-radius: 7px;
+
   color: var(--muted);
   margin: 10px 0;
   padding: 9px 11px;
 }
 
 .markdown-output code {
-  background: #eef3f7;
+
   border-radius: 5px;
   color: #0f1d33;
   font-family: Consolas, "Microsoft YaHei", monospace;
@@ -1202,8 +1104,7 @@ tbody tr:hover {
 }
 
 .markdown-output pre {
-  background: #101722;
-  border-radius: 8px;
+
   color: #edf3f8;
   margin: 10px 0;
   overflow: auto;
@@ -1236,7 +1137,7 @@ tbody tr:hover {
 .markdown-output table {
   border: 1px solid var(--line);
   border-collapse: collapse;
-  min-width: 520px;
+
   width: 100%;
 }
 
@@ -1248,7 +1149,7 @@ tbody tr:hover {
 }
 
 .markdown-output th {
-  background: var(--surface-strong);
+
   color: var(--text);
   font-size: 13px;
   font-weight: 900;
@@ -1257,15 +1158,6 @@ tbody tr:hover {
 .markdown-output td {
   background: var(--surface);
   font-size: 13px;
-}
-
-.markdown-output tbody tr:nth-child(even) td {
-  background: #f8fafb;
-}
-
-.stock-llm-panel {
-  background: #fffdf7;
-  border-color: #edd28f;
 }
 
 .stock-llm-header {
@@ -1279,8 +1171,7 @@ tbody tr:hover {
 
 .analysis-layout {
   display: grid;
-  gap: 14px;
-  grid-template-columns: 260px minmax(0, 1fr);
+
 }
 
 .stock-picker,
@@ -1297,22 +1188,12 @@ tbody tr:hover {
 }
 
 .stock-chip {
-  background: var(--surface-soft);
+
   border: 1px solid var(--line);
-  border-radius: 8px;
+
   color: var(--text);
   padding: 10px;
   text-align: left;
-}
-
-.stock-chip:hover {
-  border-color: var(--line-strong);
-}
-
-.stock-chip.is-active {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .analysis-header {
@@ -1346,10 +1227,10 @@ tbody tr:hover {
 }
 
 .analysis-block {
-  background: linear-gradient(145deg, #fbfcfd, #f6f9fb);
+
   border: 1px solid var(--line);
   border-radius: 11px;
-  padding: 15px;
+
 }
 
 .analysis-block h3 {
@@ -1427,7 +1308,7 @@ tbody tr:hover {
 }
 
 .source-url {
-  background: var(--surface-soft);
+
   border-radius: 7px;
   color: var(--subtle);
   display: grid;
@@ -1470,7 +1351,7 @@ textarea {
 
 .empty-state {
   align-items: center;
-  background: linear-gradient(135deg, #fbfcfd, #f5faf9);
+
   border: 1px dashed #aebed0;
   border-radius: 11px;
   color: var(--muted);
@@ -1631,36 +1512,6 @@ textarea {
   .edit-actions button {
     width: 100%;
   }
-}
-
-/* Light financial dashboard theme */
-:root {
-  --bg: #f6f8fb;
-  --surface: #ffffff;
-  --surface-soft: #f9fbff;
-  --surface-strong: #f1f5fb;
-  --text: #172033;
-  --muted: #667085;
-  --subtle: #98a2b3;
-  --ink-soft: #475467;
-  --line: #e5eaf2;
-  --line-strong: #cdd6e3;
-  --accent: #2563eb;
-  --accent-strong: #1d4ed8;
-  --accent-soft: #eef4ff;
-  --blue: #2563eb;
-  --blue-soft: #eef4ff;
-  --orange: #f97316;
-  --amber: #f97316;
-  --amber-soft: #fff7ed;
-  --red: #d92d20;
-  --red-soft: #fff1f0;
-  --green: #079455;
-  --green-soft: #ecfdf3;
-  --shadow-sm: 0 10px 28px rgba(16, 24, 40, 0.06);
-  --shadow-md: 0 16px 40px rgba(16, 24, 40, 0.08);
-  --radius: 22px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 html {

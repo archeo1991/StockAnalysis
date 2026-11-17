@@ -138,6 +138,7 @@
                 <option value="长期观察">长期观察</option>
                 <option value="短线+长期">短线+长期</option>
                 <option value="风险观察">风险观察</option>
+                <option value="等待确认">等待确认</option>
               </select>
             </label>
             <label class="stack-field">
@@ -248,7 +249,7 @@
       <section class="help-quick-start">
         <h3>第一次使用，只需要做 3 件事</h3>
         <ol class="help-steps">
-          <li><strong>添加股票</strong><span>在左侧“添加股票”中输入 6 位股票代码，例如 600519，然后点击添加。</span></li>
+          <li><strong>添加股票</strong><span>在“添加股票”面板中输入 6 位股票代码，例如 600519，然后点击“添加/更新”。</span></li>
           <li><strong>查看分析</strong><span>点击“个股”，选择股票后查看行情、趋势、财务、风险和事件信息。</span></li>
           <li><strong>需要 AI 时再配置</strong><span>点击右上角“大模型配置”，填入自己的模型和 API Key；不配置也能正常使用规则看板。</span></li>
         </ol>
@@ -292,7 +293,7 @@
         <section class="help-card">
           <h3>遇到问题怎么办？</h3>
           <ul>
-            <li>直接打开研策台网页即可，不需要安装或启动其他程序。</li>
+            <li>已部署的站点直接打开网页即可；在自己的电脑上使用，需要先双击 StartAgent.bat 启动本地服务。</li>
             <li>AI 无法使用：重新打开“大模型配置”，检查页面给出的验证结果。</li>
             <li>行情没更新：点击“刷新真实数据”。</li>
           </ul>
@@ -317,7 +318,7 @@
         </div>
         <button class="text-button" id="modelConfigCancelButton" type="button">关闭</button>
       </div>
-      <div class="edit-grid model-config-grid">
+      <div class="edit-grid">
         <label class="stack-field">
           <span>调用方式</span>
           <select id="modelCallMode">
@@ -334,10 +335,10 @@
             <option value="custom">OpenAI兼容服务</option>
           </select>
         </label>
-        <label class="stack-field"><span>模型名称</span><input id="modelName" type="text" placeholder="例如 deepseek-chat"></label>
+        <label class="stack-field"><span>模型名称</span><input id="modelName" type="text" placeholder="例如 deepseek-v4-pro"></label>
         <label class="stack-field wide-field"><span>接口地址</span><input id="modelBaseUrl" type="url" placeholder="例如 https://api.deepseek.com"></label>
         <label class="stack-field wide-field"><span>API Key</span><input id="modelApiKey" type="password" autocomplete="off" placeholder="仅保存在当前浏览器"></label>
-        <label class="stack-field"><span>最大输出 Tokens</span><input id="modelMaxTokens" type="number" min="256" max="16000" step="256" value="3200"></label>
+        <label class="stack-field"><span>最大输出 Tokens</span><input id="modelMaxTokens" type="number" min="256" max="16000" step="1" value="4096"></label>
       </div>
       <p class="model-privacy-note" id="modelPrivacyNote">自动模式优先由浏览器直接调用模型；如果被跨域策略阻止，会回退到当前网站的无状态代理。</p>
       <p class="inline-status" id="modelConfigStatus">尚未保存浏览器配置。</p>
@@ -369,6 +370,29 @@
       <div class="confirm-actions">
         <button class="ghost-button" id="deleteStockCancelButton" type="button">取消</button>
         <button class="danger-button" id="deleteStockConfirmButton" type="button">删除股票</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="edit-dialog confirm-dialog" id="resetDataDialog">
+    <div class="confirm-panel">
+      <div class="confirm-content">
+        <div class="confirm-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 4.5 3.6 19h16.8L12 4.5z"></path>
+            <path d="M12 10v4.5"></path>
+            <path d="M12 17.2v.2"></path>
+          </svg>
+        </div>
+        <div class="confirm-copy">
+          <h2>清空全部本地数据？</h2>
+          <p>将删除当前浏览器中的自选股、观察设置、个股 AI 报告和每日 AI 简报。</p>
+          <span>建议先导出本地备份，此操作无法撤销</span>
+        </div>
+      </div>
+      <div class="confirm-actions">
+        <button class="ghost-button" id="resetCancelButton" type="button">取消</button>
+        <button class="danger-button" id="resetConfirmButton" type="button">清空数据</button>
       </div>
     </div>
   </dialog>

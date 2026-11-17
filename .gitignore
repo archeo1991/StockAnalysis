@@ -9,3 +9,5 @@ dist
 .DS_Store
 *.key
 *.pem
+.deepseek-key
+build-info.json

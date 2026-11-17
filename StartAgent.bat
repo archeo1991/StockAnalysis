@@ -3,48 +3,41 @@ setlocal EnableExtensions DisableDelayedExpansion
 
 cd /d "%~dp0"
 
-set "NODE_EXE=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe"
-if not exist "%NODE_EXE%" set "NODE_EXE=node"
-
 echo ========================================
-echo StrategyDesk - YanCeTai Launcher
+echo YanCeTai - local service launcher
 echo ========================================
 echo.
 echo Working folder:
 echo %CD%
 echo.
 
-echo Checking Node.js...
-"%NODE_EXE%" --version
+where node >nul 2>nul
 if errorlevel 1 (
-  echo.
-  echo ERROR: Node.js is not available.
-  echo Please send this window content to Codex.
+  echo ERROR: Node.js was not found in PATH.
+  echo Install Node.js 18 or newer, then run this file again.
   echo.
   pause
   exit /b 1
 )
 
-if not exist "%CD%\agent-server.js" (
-  echo.
+if not exist "agent-server.js" (
   echo ERROR: agent-server.js was not found.
-  echo Please make sure this file is in the project folder.
+  echo Make sure this file sits next to agent-server.js.
   echo.
   pause
   exit /b 1
 )
 
+echo Node.js version:
+node --version
 echo.
-echo Starting YanCeTai Agent service...
+echo Starting YanCeTai service...
 echo URL: http://localhost:8787
-echo Model configuration: browser local storage
-echo Open the page and click the model configuration button.
-echo.
-echo Keep this window open. Closing it will stop the service.
-echo Then open http://localhost:8787 in your browser.
+echo Model configuration: stored in the browser only.
+echo Keep this window open; closing it stops the service.
 echo.
 
-"%NODE_EXE%" agent-server.js
+node agent-server.js
 
 echo.
 echo Service stopped.

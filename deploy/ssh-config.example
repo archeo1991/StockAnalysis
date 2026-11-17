@@ -1,0 +1,9 @@
+Host archeo-stock
+    HostName 106.54.229.135
+    User root
+    IdentityFile ~/.ssh/stockanalysis_deploy
+    IdentitiesOnly yes
+
+    # 首次 `ssh archeo-stock` 确认指纹后固定下来，之后的连接不再信任新指纹。
+    # 生成方式：ssh-keyscan -t ed25519 106.54.229.135
+    # （把输出贴到 ~/.ssh/known_hosts，或留空让首次连接自动写入）

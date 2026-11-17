@@ -22,6 +22,7 @@ async function main() {
     const health = await request(baseUrl, "/health");
     const data = health.data;
     if (!health.response.ok || data.ok !== true || data.browserConfigSupported !== true || typeof data.serverConfigured !== "boolean" ||
+      !data.build || typeof data.build.commit !== "string" || typeof data.build.deployedAt !== "string" ||
       !data.defaults || !data.defaults.provider || !data.defaults.model || !data.defaults.baseUrl || !Number.isFinite(data.defaults.maxTokens)) {
       throw new Error(`Unexpected health response: ${JSON.stringify(data)}`);
     }
